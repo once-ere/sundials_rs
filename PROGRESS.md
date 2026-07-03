@@ -82,10 +82,10 @@ cvsRoberts_klu, cvsRoberts_sps, cvsRoberts_ASAi_klu, cvsRoberts_ASAi_sps,
 cvsRoberts_FSA_klu, cvsRoberts_FSA_sps (KLU/SuperLU)
 
 ## crates/kinsol_rs — Phase 3
-- [ ] kinsol_impl.h — todo
+- [x] kinsol_impl.h — ported (kinsol_impl.rs: KINMem, kinsol.h constants/typedefs, KINProcessError; uncommitted)
 - [ ] kinsol.c — todo
 - [ ] kinsol_io.c — todo
-- [ ] kinsol_ls_impl.h — todo
+- [x] kinsol_ls_impl.h — ported (kinsol_ls_impl.rs: KINLsMem, kinsol_ls.h types/codes; uncommitted)
 - [ ] kinsol_ls.c — todo
 - [ ] kinsol_aa.c — todo
 - [ ] kinsol_orth.c — todo
