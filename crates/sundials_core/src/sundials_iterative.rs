@@ -18,9 +18,10 @@
  *    implementation is reproduced inline here with identical
  *    floating-point operation order.
  *
- * The SUNQRAdd_* low-synchronization variants (used only by Anderson
- * acceleration in sunnonlinsol_fixedpoint) are not part of this
- * module's translation scope.
+ * The SUNQRAddFn type and SUNQRData workspace struct (used by
+ * KINSOL's Anderson-acceleration orthogonalization options) are
+ * defined at the end of this module; the SUNQRAdd_* routine
+ * implementations land together with the kinsol_rs port.
  * -----------------------------------------------------------------*/
 use crate::nvector_serial::{NVector, N_VDotProd};
 use crate::sundials_errors::{SUNErrCode, SUN_SUCCESS};
@@ -332,6 +333,39 @@ pub fn SUNQRsol(n: i32, h: &[Vec<f64>], q: &[f64], b: &mut [f64]) -> i32 {
 
     code
 }
+
+/* -----------------------------------------------------------------
+ * Type : SUNQRData (src/sundials/sundials_iterative_impl.h)
+ *
+ * Holds temporary workspace vectors and a sunrealtype array for a
+ * SUNQRAddFn. In C the N_Vectors and array are created by the
+ * routine calling a SUNQRAdd function; here they are owned.
+ * -----------------------------------------------------------------*/
+#[derive(Debug, Clone, Default)]
+pub struct SUNQRData {
+    pub vtemp: NVector,
+    pub vtemp2: NVector,
+    pub temp_array: Vec<f64>,
+}
+
+/* -----------------------------------------------------------------
+ * Type : SUNQRAddFn (include/sundials/sundials_iterative.h)
+ *
+ * Updates the QR factorization (Q, R) with the input vector df.
+ *   m    : number of vectors already in the QR factorization
+ *   mMax : maximum number of vectors in the QR factorization
+ * C: int (*SUNQRAddFn)(N_Vector* Q_1d, sunrealtype* R_1d, N_Vector f,
+ *                      int m, int mMax, void* QR_data)
+ * The void* QR_data becomes &mut SUNQRData (workspace convention).
+ * -----------------------------------------------------------------*/
+pub type SUNQRAddFn = fn(
+    Q: &mut [NVector],
+    R: &mut [f64],
+    df: &NVector,
+    m: i32,
+    mMax: i32,
+    qr_data: &mut SUNQRData,
+) -> i32;
 
 #[cfg(test)]
 mod tests {

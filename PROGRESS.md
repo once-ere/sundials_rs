@@ -32,16 +32,16 @@ sunnonlinsol_{newton,fixedpoint}.c
 - [x] sunadaptcontroller/soderlind/sunadaptcontroller_soderlind.c — committed
 - [x] sunadaptcontroller/imexgus/sunadaptcontroller_imexgus.c — committed
 - [x] sunadaptcontroller/mrihtol/sunadaptcontroller_mrihtol.c — committed
-- [ ] sundials/sundials_domeigestimator.c — todo
-- [ ] sundomeigest/power/sundomeigest_power.c — todo
-- [ ] sundomeigest/arnoldi/sundomeigest_arnoldi.c — todo
+- [x] sundials/sundials_domeigestimator.c — committed
+- [x] sundomeigest/power/sundomeigest_power.c — committed
+- [x] sundomeigest/arnoldi/sundomeigest_arnoldi.c — committed (dgeev → EISPACK HQR, documented)
 - [x] sundials/sundials_nvector_senswrapper.c — committed
-- [ ] sundials/sundials_stepper.c — todo
-- [ ] sundials/sundials_adjointstepper.c — todo
-- [ ] sundials/sundials_adjointcheckpointscheme.c — todo
-- [ ] sunadjointcheckpointscheme/fixed/sunadjointcheckpointscheme_fixed.c — todo
-- [ ] sundials/sundials_datanode.c — todo
-- [ ] sundials/sundatanode/sundatanode_inmem.c — todo (stl/sunstl_vector.h → Vec)
+- [ ] sundials/sundials_stepper.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
+- [ ] sundials/sundials_adjointstepper.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
+- [ ] sundials/sundials_adjointcheckpointscheme.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
+- [ ] sunadjointcheckpointscheme/fixed/sunadjointcheckpointscheme_fixed.c — DEFERRED to Phase 6 start
+- [ ] sundials/sundials_datanode.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
+- [ ] sundials/sundatanode/sundatanode_inmem.c — DEFERRED to Phase 6 start (stl/sunstl_vector.h → Vec)
 
 ### excluded (core)
 sundials_mpi_errors.c (MPI); sundials_xbraid.c (XBraid);

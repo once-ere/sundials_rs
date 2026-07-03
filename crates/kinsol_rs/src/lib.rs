@@ -43,9 +43,11 @@ pub use sundials_core::sunnonlinsol_fixedpoint;
 
 // KINSOL proper (modules land phase by phase; see ../../PROGRESS.md)
 pub mod kinsol_impl;
+pub mod kinsol_ls_impl;
 
 // Flat prelude so examples can `use kinsol_rs::*;` like a C `#include`.
 pub use crate::kinsol_impl::*;
+pub use crate::kinsol_ls_impl::*;
 pub use crate::nvector_serial::*;
 pub use crate::sundials_context::*;
 pub use crate::sundials_errors::*;
