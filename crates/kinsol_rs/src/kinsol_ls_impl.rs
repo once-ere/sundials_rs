@@ -112,6 +112,14 @@ pub struct KINLsMem {
                          reevaluated (meant to be used by a
                          user-supplied jtimes function                 */
 
+    pub setup_disabled: bool, /* In C, kinLsInitialize NULLs the
+                         kin_lsetup hook when J == NULL and no full
+                         preconditioner (pset+psolve) is supplied, and
+                         kinsol.c guards every lsetup dispatch with
+                         `kin_lsetup != NULL`.  With enum dispatch the
+                         hook cannot be NULLed, so this flag carries
+                         that state (donor: CVLsMem.setup_disabled).   */
+
     pub last_flag: i32, /* last error return flag                      */
 
     /* Preconditioner computation
