@@ -50,10 +50,7 @@ macro_rules! Ith {
  */
 
 fn main() {
-    let mut fnorm: f64;
-
-    fnorm = 0.0;
-    let _ = fnorm;
+    let mut fnorm: f64 = 0.0;
 
     /* -------------------------
      * Print problem description
