@@ -20,10 +20,15 @@
  *
  * The SUNQRAddFn type and SUNQRData workspace struct (used by
  * KINSOL's Anderson-acceleration orthogonalization options) are
- * defined at the end of this module; the SUNQRAdd_* routine
- * implementations land together with the kinsol_rs port.
+ * defined at the end of this module together with the SUNQRAdd_MGS /
+ * SUNQRAdd_ICWY / SUNQRAdd_CGS2 / SUNQRAdd_DCGS2 kernels (ported for
+ * the kinsol_rs phase). The _SB ("single buffer") variants
+ * SUNQRAdd_ICWY_SB / SUNQRAdd_DCGS2_SB are not ported: they require
+ * the N_VDotProdMultiLocal + N_VDotProdMultiAllReduce fused ops,
+ * which the serial N_Vector does not provide (KINInitOrth therefore
+ * never selects them for a serial vector; see kinsol_orth.c:76-82).
  * -----------------------------------------------------------------*/
-use crate::nvector_serial::{NVector, N_VDotProd};
+use crate::nvector_serial::{NVector, N_VDotProd, N_VLinearSum, N_VScale};
 use crate::sundials_errors::{SUNErrCode, SUN_SUCCESS};
 use crate::sundials_math::{SUNRsqrt, SUNSQR};
 
@@ -366,6 +371,258 @@ pub type SUNQRAddFn = fn(
     mMax: i32,
     qr_data: &mut SUNQRData,
 ) -> i32;
+
+/* -----------------------------------------------------------------
+ * Serial fused-op kernels used by the SUNQRAdd routines.
+ *
+ * The C kernels call the fused N_Vector ops N_VDotProdMulti and
+ * N_VLinearCombination; the pure-Rust serial NVector keeps only the
+ * base ops, so the serial kernels (nvector_serial.c) are reproduced
+ * here with identical floating-point operation order.
+ * -----------------------------------------------------------------*/
+
+/* N_VDotProdMulti(nvec, x, Y, dotprods): dotprods[j] = <x, Y[j]> */
+fn sunqr_dot_prod_multi(nvec: usize, x: &NVector, y: &[NVector], dotprods: &mut [f64]) {
+    for j in 0..nvec {
+        dotprods[j] = N_VDotProd(x, &y[j]);
+    }
+}
+
+/* N_VLinearCombination(nvec, c, X, z): z = sum_i c[i]*X[i], with the
+   serial kernel's nvec == 1 / nvec == 2 dispatch (X[0] never aliases
+   z at the SUNQRAdd call sites, so only the general branch of the
+   nvec > 2 case applies). */
+fn sunqr_linear_combination(c: &[f64], x: &[NVector], z: &mut NVector) {
+    let nvec = x.len();
+    if nvec == 1 {
+        N_VScale(c[0], &x[0], z);
+        return;
+    }
+    if nvec == 2 {
+        N_VLinearSum(c[0], &x[0], c[1], &x[1], z);
+        return;
+    }
+    for j in 0..z.data.len() {
+        z.data[j] = c[0] * x[0].data[j];
+    }
+    for i in 1..nvec {
+        for j in 0..z.data.len() {
+            z.data[j] += c[i] * x[i].data[j];
+        }
+    }
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Function : SUNQRAdd_MGS
+ * -----------------------------------------------------------------
+ * Implementation of QRAdd to be called in Anderson Acceleration
+ * -----------------------------------------------------------------
+ */
+
+pub fn SUNQRAdd_MGS(
+    Q: &mut [NVector],
+    R: &mut [f64],
+    df: &NVector,
+    m: i32,
+    mMax: i32,
+    qrdata: &mut SUNQRData,
+) -> SUNErrCode {
+    let m = m as usize;
+    let mMax = mMax as usize;
+
+    N_VScale(ONE, df, &mut qrdata.vtemp);
+    for j in 0..m {
+        R[m * mMax + j] = N_VDotProd(&Q[j], &qrdata.vtemp);
+        /* N_VLinearSum(ONE, vtemp, -R[m*mMax+j], Q[j], vtemp) — output
+           aliases the first operand */
+        qrdata.vtemp.linear_sum_with(ONE, -R[m * mMax + j], &Q[j]);
+    }
+    R[m * mMax + m] = N_VDotProd(&qrdata.vtemp, &qrdata.vtemp);
+    R[m * mMax + m] = SUNRsqrt(R[m * mMax + m]);
+    N_VScale(1.0 / R[m * mMax + m], &qrdata.vtemp, &mut Q[m]);
+
+    SUN_SUCCESS
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Function : SUNQRAdd_ICWY
+ * -----------------------------------------------------------------
+ * Low synchronous implementation of QRAdd to be called in
+ * Anderson Acceleration.
+ * -----------------------------------------------------------------
+ */
+
+pub fn SUNQRAdd_ICWY(
+    Q: &mut [NVector],
+    R: &mut [f64],
+    df: &NVector,
+    m: i32,
+    mMax: i32,
+    qrdata: &mut SUNQRData,
+) -> SUNErrCode {
+    let m = m as usize;
+    let mMax = mMax as usize;
+
+    N_VScale(ONE, df, &mut qrdata.vtemp); /* stores d_fi in temp */
+
+    if m > 0 {
+        /* T(1:k-1,k-1)^T = Q(:,1:k-1)^T * Q(:,k-1) */
+        {
+            let (q_head, q_last) = Q.split_at(m - 1);
+            let _ = q_head;
+            sunqr_dot_prod_multi(m, &q_last[0], Q, &mut qrdata.temp_array[(m - 1) * mMax..]);
+        }
+
+        /* T(k-1,k-1) = 1.0 */
+        qrdata.temp_array[(m - 1) * mMax + (m - 1)] = ONE;
+
+        /* R(1:k-1,k) = Q_k-1^T * df */
+        sunqr_dot_prod_multi(m, &qrdata.vtemp, Q, &mut R[m * mMax..]);
+
+        /* Solve T^T * R(1:k-1,k) = R(1:k-1,k) */
+        for k in 0..m {
+            /* Skip setting the diagonal element because it doesn't change */
+            for j in k + 1..m {
+                R[m * mMax + j] -= R[m * mMax + k] * qrdata.temp_array[j * mMax + k];
+            }
+        }
+        /* end */
+
+        /* Q(:,k-1) = df - Q_k-1 R(1:k-1,k) */
+        sunqr_linear_combination(&R[m * mMax..m * mMax + m], &Q[..m], &mut qrdata.vtemp2);
+        /* N_VLinearSum(ONE, vtemp, -ONE, vtemp2, vtemp) — output aliases
+           the first operand */
+        qrdata.vtemp.linear_sum_with(ONE, -ONE, &qrdata.vtemp2);
+    }
+
+    /* R(k,k) = \| df \| */
+    R[m * mMax + m] = N_VDotProd(&qrdata.vtemp, &qrdata.vtemp);
+    R[m * mMax + m] = SUNRsqrt(R[m * mMax + m]);
+    /* Q(:,k) = df / \| df \| */
+    N_VScale(1.0 / R[m * mMax + m], &qrdata.vtemp, &mut Q[m]);
+
+    SUN_SUCCESS
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Function : SUNQRAdd_CGS2
+ * -----------------------------------------------------------------
+ * Low synchronous Implementation of QRAdd to be called in
+ * Anderson Acceleration.
+ * -----------------------------------------------------------------
+ */
+
+pub fn SUNQRAdd_CGS2(
+    Q: &mut [NVector],
+    R: &mut [f64],
+    df: &NVector,
+    m: i32,
+    mMax: i32,
+    qrdata: &mut SUNQRData,
+) -> SUNErrCode {
+    let m = m as usize;
+    let mMax = mMax as usize;
+
+    N_VScale(ONE, df, &mut qrdata.vtemp); /* temp = df */
+
+    if m > 0 {
+        /* s_k = Q_k-1^T df_aa -- update with sdata as a sunrealtype* array */
+        sunqr_dot_prod_multi(m, &qrdata.vtemp, Q, &mut R[m * mMax..]);
+
+        /* y = df - Q_k-1 s_k */
+        sunqr_linear_combination(&R[m * mMax..m * mMax + m], &Q[..m], &mut qrdata.vtemp2);
+        /* N_VLinearSum(ONE, vtemp, -ONE, vtemp2, vtemp2) — output aliases
+           the second operand; the serial kernel computes ONE*(x - y) */
+        for j in 0..qrdata.vtemp2.data.len() {
+            qrdata.vtemp2.data[j] = qrdata.vtemp.data[j] - qrdata.vtemp2.data[j];
+        }
+
+        /* z_k = Q_k-1^T y */
+        sunqr_dot_prod_multi(m, &qrdata.vtemp2, Q, &mut qrdata.temp_array);
+
+        /* df = y - Q_k-1 z_k */
+        {
+            let (q_head, q_tail) = Q.split_at_mut(m);
+            sunqr_linear_combination(&qrdata.temp_array[..m], q_head, &mut q_tail[0]);
+            N_VLinearSum(ONE, &qrdata.vtemp2, -ONE, &q_tail[0], &mut qrdata.vtemp);
+        }
+
+        /* R(1:k-1,k) = s_k + z_k */
+        for j in 0..m {
+            R[m * mMax + j] += qrdata.temp_array[j];
+        }
+    }
+
+    /* R(k,k) = \| df \| */
+    R[m * mMax + m] = N_VDotProd(&qrdata.vtemp, &qrdata.vtemp);
+    R[m * mMax + m] = SUNRsqrt(R[m * mMax + m]);
+    /* Q(:,k) = df / R(k,k) */
+    N_VScale(1.0 / R[m * mMax + m], &qrdata.vtemp, &mut Q[m]);
+
+    SUN_SUCCESS
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Function : SUNQRAdd_DCGS2
+ * -----------------------------------------------------------------
+ * Low synchronous Implementation of QRAdd to be called in
+ * Anderson Acceleration.
+ * -----------------------------------------------------------------
+ */
+
+pub fn SUNQRAdd_DCGS2(
+    Q: &mut [NVector],
+    R: &mut [f64],
+    df: &NVector,
+    m: i32,
+    mMax: i32,
+    qrdata: &mut SUNQRData,
+) -> SUNErrCode {
+    let m = m as usize;
+    let mMax = mMax as usize;
+
+    N_VScale(ONE, df, &mut qrdata.vtemp); /* temp = df */
+
+    if m > 0 {
+        /* R(1:k-1,k) = Q_k-1^T df_aa */
+        sunqr_dot_prod_multi(m, &qrdata.vtemp, Q, &mut R[m * mMax..]);
+        /* Delayed reorthogonalization */
+        if m > 1 {
+            /* s = Q_k-2^T Q(:,k-1) */
+            sunqr_dot_prod_multi(m - 1, &Q[m - 1], Q, &mut qrdata.temp_array);
+
+            /* Q(:,k-1) = Q(:,k-1) - Q_k-2 s */
+            sunqr_linear_combination(&qrdata.temp_array[..m - 1], &Q[..m - 1],
+                                     &mut qrdata.vtemp2);
+            /* N_VLinearSum(ONE, Q[m-1], -ONE, vtemp2, Q[m-1]) — output
+               aliases the first operand */
+            Q[m - 1].linear_sum_with(ONE, -ONE, &qrdata.vtemp2);
+
+            /* R(1:k-2,k-1) = R(1:k-2,k-1) + s */
+            for j in 0..m - 1 {
+                R[(m - 1) * mMax + j] += qrdata.temp_array[j];
+            }
+        }
+
+        /* df = df - Q(:,k-1) R(1:k-1,k) */
+        sunqr_linear_combination(&R[m * mMax..m * mMax + m], &Q[..m], &mut qrdata.vtemp2);
+        /* N_VLinearSum(ONE, vtemp, -ONE, vtemp2, vtemp) — output aliases
+           the first operand */
+        qrdata.vtemp.linear_sum_with(ONE, -ONE, &qrdata.vtemp2);
+    }
+
+    /* R(k,k) = \| df \| */
+    R[m * mMax + m] = N_VDotProd(&qrdata.vtemp, &qrdata.vtemp);
+    R[m * mMax + m] = SUNRsqrt(R[m * mMax + m]);
+    /* Q(:,k) = df / R(k,k) */
+    N_VScale(1.0 / R[m * mMax + m], &qrdata.vtemp, &mut Q[m]);
+
+    SUN_SUCCESS
+}
 
 #[cfg(test)]
 mod tests {

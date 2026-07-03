@@ -56,19 +56,19 @@ cvode_fused_gpu.cpp (GPU; stubs ported); examples cvRoberts_klu,
 cvRoberts_block_klu, cvRoberts_sps (KLU/SuperLU)
 
 ## crates/cvodes_rs — Phase 2
-- [ ] cvodes_impl.h — todo
-- [ ] cvodes.c — todo
+- [x] cvodes_impl.h — committed
+- [~] cvodes.c — PART 1/3 committed (lines 1-2912); part 2 (2913-6244) and part 3 (6245-end) pending
 - [ ] cvodes_io.c — todo
-- [ ] cvodes_ls_impl.h — todo
-- [ ] cvodes_ls.c — todo
+- [x] cvodes_ls_impl.h — committed
+- [x] cvodes_ls.c — committed
 - [ ] cvodes_nls.c — todo
 - [ ] cvodes_nls_sim.c — todo
 - [ ] cvodes_nls_stg.c — todo
 - [ ] cvodes_nls_stg1.c — todo
-- [ ] cvodes_diag_impl.h — todo
-- [ ] cvodes_diag.c — todo
-- [ ] cvodes_proj_impl.h — todo
-- [ ] cvodes_proj.c — todo
+- [x] cvodes_diag_impl.h — committed
+- [x] cvodes_diag.c — committed
+- [x] cvodes_proj_impl.h — committed
+- [x] cvodes_proj.c — committed
 - [ ] cvodes_bandpre_impl.h — todo
 - [ ] cvodes_bandpre.c — todo
 - [ ] cvodes_bbdpre_impl.h — todo
@@ -83,12 +83,12 @@ cvsRoberts_FSA_klu, cvsRoberts_FSA_sps (KLU/SuperLU)
 
 ## crates/kinsol_rs — Phase 3
 - [x] kinsol_impl.h — ported (kinsol_impl.rs: KINMem, kinsol.h constants/typedefs, KINProcessError; uncommitted)
-- [ ] kinsol.c — todo
-- [ ] kinsol_io.c — todo
+- [x] kinsol.c — committed
+- [x] kinsol_io.c — committed
 - [x] kinsol_ls_impl.h — ported (kinsol_ls_impl.rs: KINLsMem, kinsol_ls.h types/codes; uncommitted)
-- [ ] kinsol_ls.c — todo
-- [ ] kinsol_aa.c — todo
-- [ ] kinsol_orth.c — todo
+- [x] kinsol_ls.c — committed
+- [x] kinsol_aa.c — committed
+- [x] kinsol_orth.c — committed
 - [ ] kinsol_bbdpre_impl.h — todo
 - [ ] kinsol_bbdpre.c — todo
 - [ ] kinsol_cli.c — todo
