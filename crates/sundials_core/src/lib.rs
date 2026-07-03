@@ -40,3 +40,22 @@ pub mod sunlinsol_pcg;
 pub mod sundials_nonlinearsolver;
 pub mod sunnonlinsol_newton;
 pub mod sunnonlinsol_fixedpoint;
+
+// Phase 1 — remaining shared core (stubs being filled in)
+pub mod sundials_version;
+pub mod sundials_futils;
+pub mod sundials_memory;
+pub mod sundials_system_memory;
+pub mod sundials_direct;
+pub mod sundials_hashmap;
+pub mod sundials_logger;
+pub mod sundials_profiler;
+pub mod sundials_cli;
+pub mod sundials_adaptcontroller;
+pub mod sunadaptcontroller_soderlind;
+pub mod sunadaptcontroller_imexgus;
+pub mod sunadaptcontroller_mrihtol;
+pub mod sundials_domeigestimator;
+pub mod sundomeigest_power;
+pub mod sundomeigest_arnoldi;
+pub mod sundials_nvector_senswrapper;

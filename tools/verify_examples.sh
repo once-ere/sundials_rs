@@ -8,6 +8,10 @@
 set -u
 cd "$(dirname "$0")/.."
 REFROOT="../sundials-7.7.0/examples"
+# Optional second reference tree: outputs of the locally-built C library
+# (same layout as $REFROOT). When a run differs from the shipped .out but
+# matches the local C build byte-for-byte, report LOCAL-C instead of DIFF.
+LOCALREF="${SUNDIALS_LOCALREF:-/private/tmp/claude-501/-Users-nsh-Developer-code-rust-cvode/bd673a25-b3e9-4e34-b640-b551e1852c17/scratchpad/localref}"
 mkdir -p logs
 : > logs/summary.txt
 
@@ -57,7 +61,12 @@ verify_crate() {
       echo "$crate/$name  IDENTICAL" >> logs/summary.txt
       rm -f "logs/$name.diff"
     else
-      echo "$crate/$name  DIFF($(wc -l < "logs/$name.diff" | tr -d ' ') lines)" >> logs/summary.txt
+      local lref="$LOCALREF/${refdir#$REFROOT/}/$name.out"
+      if [ -f "$lref" ] && diff <(flt "logs/$name.out") <(flt "$lref") > /dev/null 2>&1; then
+        echo "$crate/$name  LOCAL-C (shipped-ref diff: $(wc -l < "logs/$name.diff" | tr -d ' ') lines)" >> logs/summary.txt
+      else
+        echo "$crate/$name  DIFF($(wc -l < "logs/$name.diff" | tr -d ' ') lines)" >> logs/summary.txt
+      fi
     fi
   done
 }

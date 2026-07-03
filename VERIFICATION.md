@@ -6,6 +6,11 @@ Statuses: `identical` | `last-digit(reason)` | `local-C(reason)` (matches a
 locally-built C binary byte-for-byte; shipped .out from a foreign libm) |
 `noref` | `todo` | `excluded(reason)`.
 
+2026-07-03: C SUNDIALS 7.7.0 was built locally (Release, `-ffp-contract=off`,
+no LAPACK/KLU) in the session scratchpad; every serial example's local output
+is saved under `<scratchpad>/localref/`. All `local-C` statuses below were
+re-confirmed byte-for-byte against those binaries on this machine.
+
 ## cvode_rs (donor; re-verified in workspace 2026-07-03)
 
 | example | status |
@@ -14,18 +19,18 @@ locally-built C binary byte-for-byte; shipped .out from a foreign libm) |
 | cvRoberts_dnsL | last-digit(LAPACK ref vs native LU; donor-documented) |
 | cvRoberts_dns_uw | identical |
 | cvRoberts_dns_constraints | identical |
-| cvRoberts_dns_negsol | local-C(shipped .out has stale stats-line spacing; port matches current C source) |
+| cvRoberts_dns_negsol | local-C(byte-identical to local C build; shipped .out stale stats-line spacing) |
 | cvAdvDiff_bnd | identical |
 | cvAdvDiff_bndL | identical |
-| cvDiurnal_kry | local-C(shipped .out from foreign libm; donor-documented) |
-| cvDiurnal_kry_bp | todo (donor stub — translate) |
-| cvDirectDemo_ls | local-C(foreign-libm ref; donor-documented) |
-| cvKrylovDemo_ls | todo (donor stub — translate) |
+| cvDiurnal_kry | local-C(byte-identical to local C build) |
+| cvDiurnal_kry_bp | local-C(byte-identical to local C build; shipped .out foreign-libm, drift onset t=2.88e4) |
+| cvDirectDemo_ls | local-C(byte-identical to local C build) |
+| cvKrylovDemo_ls | local-C(byte-identical to local C build; shipped .out foreign-libm) |
 | cvKrylovDemo_prec | todo (donor stub — translate) |
 | cvDisc_dns | identical |
 | cvAnalytic_mels | identical |
-| cvParticle_dns | todo (donor stub — translate) |
-| cvPendulum_dns | todo (donor stub — translate) |
+| cvParticle_dns | local-C(byte-identical to local C -ffp-contract=off build; shipped .out foreign platform, 100-orbit chaotic amplification) |
+| cvPendulum_dns | local-C(shipped .out has stale one-digit atol exponent unproducible by current C source; all numeric rows byte-identical) |
 | cvRocket_dns | identical |
 | solar_system | noref (new example; energy-conservation self-check) |
 | cvRoberts_klu / cvRoberts_block_klu / cvRoberts_sps | excluded(KLU/SuperLU) |

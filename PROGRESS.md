@@ -19,19 +19,19 @@ sunmatrix_{dense,band,sparse}.c; sunlinsol_{dense,band,spgmr,spfgmr,spbcgs,sptfq
 sunnonlinsol_{newton,fixedpoint}.c
 
 ### Phase 1 — todo
-- [ ] sundials/sundials_version.c — todo
-- [ ] sundials/sundials_hashmap.c — todo
-- [ ] sundials/sundials_logger.c — todo
-- [ ] sundials/sundials_profiler.c — todo (std::time::Instant timers)
-- [ ] sundials/sundials_memory.c — todo
-- [ ] sunmemory/system/sundials_system_memory.c — todo
-- [ ] sundials/sundials_direct.c — todo
-- [ ] sundials/sundials_futils.c — todo (std::fs)
-- [ ] sundials/sundials_cli.c — todo
-- [ ] sundials/sundials_adaptcontroller.c — todo
-- [ ] sunadaptcontroller/soderlind/sunadaptcontroller_soderlind.c — todo
-- [ ] sunadaptcontroller/imexgus/sunadaptcontroller_imexgus.c — todo
-- [ ] sunadaptcontroller/mrihtol/sunadaptcontroller_mrihtol.c — todo
+- [x] sundials/sundials_version.c — committed
+- [x] sundials/sundials_hashmap.c — committed
+- [x] sundials/sundials_logger.c — committed
+- [x] sundials/sundials_profiler.c — committed (std::time::Instant timers)
+- [x] sundials/sundials_memory.c — committed
+- [x] sunmemory/system/sundials_system_memory.c — committed
+- [x] sundials/sundials_direct.c — committed
+- [x] sundials/sundials_futils.c — committed (std::fs)
+- [x] sundials/sundials_cli.c — committed
+- [x] sundials/sundials_adaptcontroller.c — committed
+- [x] sunadaptcontroller/soderlind/sunadaptcontroller_soderlind.c — committed
+- [x] sunadaptcontroller/imexgus/sunadaptcontroller_imexgus.c — committed
+- [x] sunadaptcontroller/mrihtol/sunadaptcontroller_mrihtol.c — committed
 - [ ] sundials/sundials_domeigestimator.c — todo
 - [ ] sundomeigest/power/sundomeigest_power.c — todo
 - [ ] sundomeigest/arnoldi/sundomeigest_arnoldi.c — todo
@@ -48,8 +48,9 @@ sundials_mpi_errors.c (MPI); sundials_xbraid.c (XBraid);
 sundials_cuda.h/hip.h/sycl.h etc. (GPU headers); fmod_* (Fortran)
 
 ## crates/cvode_rs — library committed (donor); examples see VERIFICATION.md
-- [ ] 5 donor example stubs to translate: cvDiurnal_kry_bp, cvKrylovDemo_ls,
-      cvKrylovDemo_prec, cvParticle_dns, cvPendulum_dns — todo
+- [x] donor example stubs translated: cvDiurnal_kry_bp, cvKrylovDemo_ls,
+      cvParticle_dns, cvPendulum_dns — committed (all LOCAL-C verified)
+- [ ] cvKrylovDemo_prec — in translation
 ### excluded (cvode)
 cvode_fused_gpu.cpp (GPU; stubs ported); examples cvRoberts_klu,
 cvRoberts_block_klu, cvRoberts_sps (KLU/SuperLU)
