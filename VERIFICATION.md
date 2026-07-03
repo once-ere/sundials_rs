@@ -73,11 +73,11 @@ re-confirmed byte-for-byte against those binaries on this machine.
 |---|---|
 | kinAnalytic_fp | identical (incl. all 10 shipped arg-variant .out files) |
 | kinFerTron_dns | identical |
-| kinFoodWeb_kry | todo |
-| kinKrylovDemo_ls | todo |
-| kinLaplace_bnd | todo |
-| kinLaplace_picard_bnd | todo |
-| kinLaplace_picard_kry | todo |
+| kinFoodWeb_kry | identical |
+| kinKrylovDemo_ls | identical (4 solver passes) |
+| kinLaplace_bnd | identical |
+| kinLaplace_picard_bnd | identical |
+| kinLaplace_picard_kry | local-C(shipped .out adds trailing newline absent from C printf; content identical) |
 | kinRoberts_fp | identical (incl. kinsol.m_aa_1 KINSetOptions variant) |
 | kinRoboKin_dns | local-C(byte-identical stdout+csv to local C build; shipped .out stale SUN_TABLE_WIDTH 28 vs 29 in 7.7.0, shipped .csv stale %g-style reals vs SUN_FORMAT_E) |
 | kinFerTron_klu / kinRoboKin_slu | excluded(KLU/SuperLU) |

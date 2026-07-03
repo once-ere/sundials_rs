@@ -25,6 +25,8 @@
  * -----------------------------------------------------------------*/
 use std::cell::RefCell;
 
+use crate::cvodes_bandpre::{CVBandPrecSetup, CVBandPrecSolve};
+use crate::cvodes_bbdpre::{CVBBDPrecSetup, CVBBDPrecSolve};
 use crate::cvodes_impl::*;
 use crate::cvodes_ls_impl::*;
 use crate::nvector_serial::*;
@@ -962,10 +964,10 @@ pub fn cvLsInitialize(cv_mem: &mut CVodeMem, cvls_mem: &mut CVLsMem) -> i32 {
     }
 
     /* if A is NULL and psetup is not present, then cvLsSetup does not
-       need to be called, so disable the lsetup dispatch.
-       (When the BandPre/BBDPre PrecModule variants land, this condition
-       gains the donor's prec_module clause.) */
-    cvls_mem.setup_disabled = cvls_mem.A.is_none() && cvls_mem.pset.is_none();
+       need to be called, so disable the lsetup dispatch */
+    cvls_mem.setup_disabled = cvls_mem.A.is_none()
+        && cvls_mem.pset.is_none()
+        && matches!(cvls_mem.prec_module, PrecModule::None | PrecModule::User);
 
     /* When using a matrix-embedded linear solver, disable lsetup call
        and solution scaling */
@@ -1133,6 +1135,8 @@ fn cvLsPSetup(cv_mem: &mut CVodeMem, cvls_mem: &mut CVLsMem) -> i32 {
                 0
             }
         }
+        PrecModule::BandPre(bp) => CVBandPrecSetup(cv_mem, bp, jok),
+        PrecModule::BBDPre(bbd) => CVBBDPrecSetup(cv_mem, bbd, jok),
     }
 }
 
@@ -1268,7 +1272,8 @@ fn cvLsSolveIterative(
     let jt_f = *jt_f;
     let psolve_fn = *psolve;
 
-    let has_psolve = psolve_fn.is_some();
+    let has_psolve = psolve_fn.is_some()
+        || matches!(prec_module, PrecModule::BandPre(_) | PrecModule::BBDPre(_));
 
     let ewt = std::mem::take(&mut cv_mem.cv_ewt);
     let weightS = ewtS_is.map(|is| std::mem::take(&mut cv_mem.cv_ewtS[is]));
@@ -1311,6 +1316,8 @@ fn cvLsSolveIterative(
                     0
                 }
             }
+            PrecModule::BandPre(bp) => CVBandPrecSolve(cvr, bp, r, z),
+            PrecModule::BBDPre(bbd) => CVBBDPrecSolve(cvr, bbd, r, z),
             PrecModule::None => 0,
         };
         *nps += 1;

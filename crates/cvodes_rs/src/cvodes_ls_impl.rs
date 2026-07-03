@@ -15,6 +15,8 @@
  *  - pfree is dropped (RAII): the preconditioner attachment is the
  *    PrecModule enum below.
  * -----------------------------------------------------------------*/
+use crate::cvodes_bandpre_impl::CVBandPrecData;
+use crate::cvodes_bbdpre_impl::CVBBDPrecData;
 use crate::cvodes_impl::CVRhsFn;
 use crate::nvector_serial::NVector;
 use crate::sundials_linearsolver::LinearSolver;
@@ -110,19 +112,17 @@ pub type CVLsLinSysFn = fn(
 /* Preconditioner module attached to CVLS.
    In C this is the P_data/pfree convention: P_data points at
    user_data (user-supplied pset/psolve) or at an internal
-   preconditioner module (cvodes_bandpre / cvodes_bbdpre).
-
-   NOTE (phased port, mirroring LsModule in cvodes_impl.rs): the
-   donor enum carries BandPre(Box<CVBandPrecData>) and
-   BBDPre(Box<CVBBDPrecData>) variants; those are added here when
-   cvodes_bandpre_impl.rs / cvodes_bbdpre_impl.rs land. Until then
-   only the user-supplied/none states exist. */
+   preconditioner module (cvodes_bandpre / cvodes_bbdpre). */
 #[derive(Default)]
 pub enum PrecModule {
     #[default]
     None,
     /// user-supplied pset/psolve get user_data
     User,
+    /// CVBandPrecInit module data
+    BandPre(Box<CVBandPrecData>),
+    /// CVBBDPrecInit module data
+    BBDPre(Box<CVBBDPrecData>),
 }
 
 /* -----------------------------------------------------------------
