@@ -57,7 +57,7 @@ cvRoberts_block_klu, cvRoberts_sps (KLU/SuperLU)
 
 ## crates/cvodes_rs — Phase 2
 - [x] cvodes_impl.h — committed
-- [~] cvodes.c — PART 1/3 committed (lines 1-2912); part 2 (2913-6244) and part 3 (6245-end) pending
+- [~] cvodes.c — PARTS 1+2/3 written (lines 1-6244: init/tolerances + CVode driver, Get* extraction, Free family, alloc/free vectors, cvInitialSetup, cvHin family; part 2 type-checked in an isolated harness against pinned PART 3 stubs); part 3 (6245-end, incl. cvStep 5874-6244) pending
 - [ ] cvodes_io.c — todo
 - [x] cvodes_ls_impl.h — committed
 - [x] cvodes_ls.c — committed

@@ -1863,20 +1863,15 @@ const MAX_ITERS: i32 = 4;
  * (In C these are the cv_linit/cv_lsetup/cv_lsolve function
  *  pointers; the module is taken out of CVodeMem during the call so
  *  its routine can borrow the integrator memory mutably. Donor
- *  pattern; cv_lreinit_dispatch already landed with PART 1.)
+ *  pattern. cv_lreinit_dispatch landed with PART 1; the shared
+ *  cv_has_lsetup / cv_lsetup_dispatch / cv_lsolve_dispatch helpers
+ *  live in cvodes_nls.rs next to their C callers (the CVODES lsolve
+ *  additionally forwards the STAGGERED1 sensitivity index selecting
+ *  the ewtS[is] weight, mirroring the C cv_lsolve weight argument);
+ *  only the linit dispatch is needed here.)
  * -----------------------------------------------------------------
  */
-
-pub(crate) fn cv_has_lsetup(cv_mem: &CVodeMem) -> bool {
-    /* mirrors C's `cv_mem->cv_lsetup != NULL`: cvLsInitialize NULLs the
-       lsetup pointer for matrix-free-without-preconditioner and
-       matrix-embedded configurations (setup_disabled) */
-    match &cv_mem.cv_lmem {
-        LsModule::None => false,
-        LsModule::Ls(ls) => !ls.setup_disabled,
-        LsModule::Diag(_) => true,
-    }
-}
+use crate::cvodes_nls::cv_has_lsetup;
 
 pub(crate) fn cv_linit_dispatch(cv_mem: &mut CVodeMem) -> i32 {
     let mut lmem = std::mem::take(&mut cv_mem.cv_lmem);
@@ -1884,43 +1879,6 @@ pub(crate) fn cv_linit_dispatch(cv_mem: &mut CVodeMem) -> i32 {
         LsModule::None => 0,
         LsModule::Ls(ls) => crate::cvodes_ls::cvLsInitialize(cv_mem, ls),
         LsModule::Diag(dm) => crate::cvodes_diag::cvDiagInit(cv_mem, dm),
-    };
-    cv_mem.cv_lmem = lmem;
-    ier
-}
-
-pub(crate) fn cv_lsetup_dispatch(
-    cv_mem: &mut CVodeMem,
-    convfail: i32,
-    jcur_ptr: &mut bool,
-) -> i32 {
-    let mut lmem = std::mem::take(&mut cv_mem.cv_lmem);
-    let ier = match &mut lmem {
-        LsModule::None => 0,
-        LsModule::Ls(ls) => crate::cvodes_ls::cvLsSetup(cv_mem, ls, convfail, jcur_ptr),
-        LsModule::Diag(dm) => crate::cvodes_diag::cvDiagSetup(cv_mem, dm, convfail, jcur_ptr),
-    };
-    cv_mem.cv_lmem = lmem;
-    ier
-}
-
-/* The CVODES lsolve receives the weight vector to use: cv_ewt for
-   state solves (ewtS_is = None) or cv_ewtS[is] for STAGGERED1
-   sensitivity solves (ewtS_is = Some(is)); this mirrors the C
-   cv_lsolve(cv_mem, b, weight, ycur, fcur) weight argument. */
-pub(crate) fn cv_lsolve_dispatch(
-    cv_mem: &mut CVodeMem,
-    b: &mut NVector,
-    ewtS_is: Option<usize>,
-) -> i32 {
-    let mut lmem = std::mem::take(&mut cv_mem.cv_lmem);
-    let ier = match &mut lmem {
-        LsModule::None => {
-            cvProcessError(Some(cv_mem), CV_ILL_INPUT, line!(), "cv_lsolve", file!(), MSGCV_LSOLVE_NULL);
-            -1
-        }
-        LsModule::Ls(ls) => crate::cvodes_ls::cvLsSolve(cv_mem, ls, b, ewtS_is),
-        LsModule::Diag(dm) => crate::cvodes_diag::cvDiagSolve(cv_mem, dm, b),
     };
     cv_mem.cv_lmem = lmem;
     ier
