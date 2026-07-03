@@ -1015,8 +1015,15 @@ pub fn cvLsSetup(cv_mem: &mut CVodeMem, cvls_mem: &mut CVLsMem, convfail: i32, j
             LS.setup(A.as_mut())
         }
         _ => {
-            /* iterative solver: preconditioner setup (cvLsPSetup) */
-            cvLsPSetup(cv_mem, cvls_mem)
+            /* iterative solver: preconditioner setup (cvLsPSetup). In C the
+               jcurPtr seen here and the &cv_mem->cv_jcur handed to the
+               user/module psetup are the same storage; the psetup routines
+               here write cv_mem.cv_jcur, so sync it with the caller's
+               jcur_ptr across the call. */
+            cv_mem.cv_jcur = *jcur_ptr;
+            let retval = cvLsPSetup(cv_mem, cvls_mem);
+            *jcur_ptr = cv_mem.cv_jcur;
+            retval
         }
     };
 

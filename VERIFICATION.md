@@ -26,7 +26,7 @@ re-confirmed byte-for-byte against those binaries on this machine.
 | cvDiurnal_kry_bp | local-C(byte-identical to local C build; shipped .out foreign-libm, drift onset t=2.88e4) |
 | cvDirectDemo_ls | local-C(byte-identical to local C build) |
 | cvKrylovDemo_ls | local-C(byte-identical to local C build; shipped .out foreign-libm) |
-| cvKrylovDemo_prec | todo (donor stub — translate) |
+| cvKrylovDemo_prec | identical |
 | cvDisc_dns | identical |
 | cvAnalytic_mels | identical |
 | cvParticle_dns | local-C(byte-identical to local C -ffp-contract=off build; shipped .out foreign platform, 100-orbit chaotic amplification) |
@@ -116,6 +116,15 @@ re-confirmed byte-for-byte against those binaries on this machine.
 | idasRoberts_klu / _sps / _ASAi_klu / _ASAi_sps / _FSA_klu / _FSA_sps | excluded(KLU/SuperLU) |
 
 ## arkode_rs (Phase 6)
+
+NOTE for the Phase 6 harness: many arkode references encode command-line
+arguments in the filename (e.g. `ark_brusselator1D_imexmri_2_0.001.out` ←
+argv "2 0.001"; `ark_kepler_--stepper_ERK_--step-mode_adapt.out`). There are
+76 reference outputs for 32 examples. Verification must run each example
+once per reference file with the args decoded from its suffix, and local-C
+references must be regenerated the same way (C binaries live in the
+scratchpad sunbuild). One VERIFICATION line per reference file, not per
+example.
 
 | example | status |
 |---|---|

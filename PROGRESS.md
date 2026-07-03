@@ -35,7 +35,7 @@ sunnonlinsol_{newton,fixedpoint}.c
 - [ ] sundials/sundials_domeigestimator.c — todo
 - [ ] sundomeigest/power/sundomeigest_power.c — todo
 - [ ] sundomeigest/arnoldi/sundomeigest_arnoldi.c — todo
-- [ ] sundials/sundials_nvector_senswrapper.c — todo
+- [x] sundials/sundials_nvector_senswrapper.c — committed
 - [ ] sundials/sundials_stepper.c — todo
 - [ ] sundials/sundials_adjointstepper.c — todo
 - [ ] sundials/sundials_adjointcheckpointscheme.c — todo
@@ -50,7 +50,7 @@ sundials_cuda.h/hip.h/sycl.h etc. (GPU headers); fmod_* (Fortran)
 ## crates/cvode_rs — library committed (donor); examples see VERIFICATION.md
 - [x] donor example stubs translated: cvDiurnal_kry_bp, cvKrylovDemo_ls,
       cvParticle_dns, cvPendulum_dns — committed (all LOCAL-C verified)
-- [ ] cvKrylovDemo_prec — in translation
+- [x] cvKrylovDemo_prec — committed (IDENTICAL to shipped .out; exposed+fixed cv_jcur aliasing bug in cvode_ls.rs)
 ### excluded (cvode)
 cvode_fused_gpu.cpp (GPU; stubs ported); examples cvRoberts_klu,
 cvRoberts_block_klu, cvRoberts_sps (KLU/SuperLU)
