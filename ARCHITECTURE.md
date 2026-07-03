@@ -330,3 +330,37 @@ the whole workspace. The shared layer (§§1–3) now lives in the
 path shown above still resolves. Per-solver addenda (cvodes sensitivities,
 ida/idas, kinsol, arkode steppers, adaptcontrollers, domeigest, adjoint
 stack) are appended below as each phase lands.
+
+## Addendum A — shared-core completion (Phase 1)
+
+- `SUNAdaptController` (sundials_adaptcontroller.rs): ops table → enum
+  { Soderlind, ImExGus, MRIHTol }; content structs live in the
+  sunadaptcontroller_*.rs impl modules; wrong-variant impl calls return
+  SUN_ERR_ARG_INCOMPATIBLE; MRIHTol owns its two sub-controllers as Boxes.
+  Constructors take no SUNContext (donor convention). NewEmpty/DestroyEmpty
+  C-object plumbing has no Rust counterpart; Destroy = drop.
+- `SUNDomEigEstimator` (sundials_domeigestimator.rs): same pattern,
+  enum { Power, Arnoldi }.
+- SUNLogger / SUNProfiler are complete standalone modules; SUNContext stays
+  a unit-like struct (donor contract) because the default SUNDIALS build
+  compiles solver logging/profiling macros out — solvers do not call them.
+- SUNHashMap is generic over V; logger keys streams by filename, profiler
+  uses std HashMap internally (documented adaptation).
+- FILE* → &mut dyn std::io::Write everywhere; SUNFileHandle enum
+  (sundials_futils.rs) models stdout/stderr/file/NULL.
+- N_VectorSensWrapper (sundials_nvector_senswrapper.rs): struct owning
+  Vec<NVector>; C's borrow-wrapping collapses to ownership.
+
+## Addendum B — cvodes design contract (Phase 2)
+
+- cvodes_impl.rs: CVodeMem is the donor struct + quad/sens/quadsens/adjoint
+  extensions; `N_Vector*` → Vec<NVector>; znS-style arrays → [Vec<NVector>; L_MAX].
+- Four correctors: NLS, NLSsim, NLSstg, NLSstg1 each Option<NonlinearSolver>.
+  The C senswrapper aliases zn0Sim/ycorSim/ewtSim etc. are NOT stored:
+  cvodes_nls{,_sim,_stg,_stg1}.rs operate directly on CVodeMem fields
+  (same collapse the donor used for cvode_nls.rs).
+- Adjoint: linked lists → Vecs (ck_mem: Vec<CVckpntMem>, cvB_mem:
+  Vec<CVodeBMem>, dt_mem: Vec<CVdtpntMem>); current-pointer fields become
+  indices; dt content void* → enum DtpntContent { Hermite, Polynomial };
+  IM fn pointers → dispatch on ca_IMtype; CVodeBMem owns a nested
+  Box<CVodeMem> for the backward problem.
