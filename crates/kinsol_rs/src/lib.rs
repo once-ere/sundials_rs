@@ -49,6 +49,9 @@ pub mod kinsol_aa;
 pub mod kinsol_orth;
 pub mod kinsol_io;
 pub mod kinsol_ls;
+pub mod kinsol_bbdpre_impl;
+pub mod kinsol_bbdpre;
+pub mod kinsol_cli;
 
 // Flat prelude so examples can `use kinsol_rs::*;` like a C `#include`.
 pub use crate::kinsol_impl::*;
@@ -58,6 +61,9 @@ pub use crate::kinsol_aa::*;
 pub use crate::kinsol_orth::*;
 pub use crate::kinsol_io::*;
 pub use crate::kinsol_ls::*;
+pub use crate::kinsol_bbdpre_impl::*;
+pub use crate::kinsol_bbdpre::*;
+pub use crate::kinsol_cli::*;
 pub use crate::nvector_serial::*;
 pub use crate::sundials_context::*;
 pub use crate::sundials_errors::*;

@@ -89,9 +89,9 @@ cvsRoberts_FSA_klu, cvsRoberts_FSA_sps (KLU/SuperLU)
 - [x] kinsol_ls.c — committed
 - [x] kinsol_aa.c — committed
 - [x] kinsol_orth.c — committed
-- [ ] kinsol_bbdpre_impl.h — todo
-- [ ] kinsol_bbdpre.c — todo
-- [ ] kinsol_cli.c — todo
+- [x] kinsol_bbdpre_impl.h — ported (kinsol_bbdpre_impl.rs: KBBDPrecData, KINBBDLocalFn/KINBBDCommFn; uncommitted)
+- [x] kinsol_bbdpre.c — ported (kinsol_bbdpre.rs; PrecModule::BBDPre variant + kinLsPSetup/psolve/setup_disabled dispatch in kinsol_ls(_impl).rs; uncommitted)
+- [x] kinsol_cli.c — ported (kinsol_cli.rs over sundials_core::sundials_cli generics; uncommitted)
 ### excluded (kinsol) examples
 kinFerTron_klu (KLU), kinRoboKin_slu (SuperLU)
 

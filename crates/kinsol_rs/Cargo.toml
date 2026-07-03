@@ -7,3 +7,32 @@ description = "Pure-Rust, memory-safe translation of kinsol v7.7.0 (SUNDIALS) â€
 
 [dependencies]
 sundials_core = { path = "../sundials_core" }
+
+# Translated KINSOL serial examples (from sundials-7.7.0/examples/kinsol/serial)
+
+[[example]]
+name = "kinAnalytic_fp"
+
+[[example]]
+name = "kinFerTron_dns"
+
+[[example]]
+name = "kinFoodWeb_kry"
+
+[[example]]
+name = "kinKrylovDemo_ls"
+
+[[example]]
+name = "kinLaplace_bnd"
+
+[[example]]
+name = "kinLaplace_picard_bnd"
+
+[[example]]
+name = "kinLaplace_picard_kry"
+
+[[example]]
+name = "kinRoberts_fp"
+
+[[example]]
+name = "kinRoboKin_dns"

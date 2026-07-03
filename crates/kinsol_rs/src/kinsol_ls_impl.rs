@@ -4,6 +4,7 @@
  * KINLS linear-solver-interface memory structure and constants.
  * Conventions follow the donor cvode_ls_impl.rs.
  * -----------------------------------------------------------------*/
+use crate::kinsol_bbdpre_impl::KBBDPrecData;
 use crate::kinsol_impl::KINSysFn;
 use crate::nvector_serial::NVector;
 use crate::sundials_linearsolver::LinearSolver;
@@ -66,15 +67,16 @@ pub type KINLsJacTimesVecFn = fn(
 
 /* Preconditioner module attached to KINLS.
    In C this is the pdata/pfree convention: pdata points at
-   user_data (user-supplied pset/psolve) or at an internal
-   preconditioner module (kinsol_bbdpre; its variant is added here
-   when that module lands). */
+   user_data (user-supplied pset/psolve) or at the internal
+   kinsol_bbdpre preconditioner module data. */
 #[derive(Default)]
 pub enum PrecModule {
     #[default]
     None,
     /// user-supplied pset/psolve get user_data
     User,
+    /// KINBBDPrecInit module data
+    BBDPre(Box<KBBDPrecData>),
 }
 
 /* -----------------------------------------------------------------

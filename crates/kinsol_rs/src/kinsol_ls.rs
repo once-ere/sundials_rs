@@ -8,6 +8,7 @@
  * -----------------------------------------------------------------*/
 use std::cell::RefCell;
 
+use crate::kinsol_bbdpre::{KINBBDPrecSetup, KINBBDPrecSolve};
 use crate::kinsol_impl::*;
 use crate::kinsol_ls_impl::*;
 use crate::nvector_serial::*;
@@ -506,14 +507,26 @@ pub fn kinLsATimes(
   non-NULL; here the None case returns 0 (setup no-op).
   ---------------------------------------------------------------*/
 pub fn kinLsPSetup(kin_mem: &mut KINMem, kinls_mem: &mut KINLsMem) -> i32 {
-    if let Some(pset) = kinls_mem.pset {
-        /* Call user pset routine to update preconditioner */
-        let KINMem { kin_uu, kin_uscale, kin_fval, kin_fscale, kin_user_data, .. } = kin_mem;
-        let retval = pset(kin_uu, kin_uscale, kin_fval, kin_fscale, kin_user_data);
-        kinls_mem.npe += 1;
-        retval
-    } else {
-        0
+    let KINLsMem { pset, prec_module, npe, .. } = kinls_mem;
+    match prec_module {
+        /* internal kinsol_bbdpre module (C pset = KINBBDPrecSetup) */
+        PrecModule::BBDPre(pdata) => {
+            let retval = KINBBDPrecSetup(kin_mem, pdata);
+            *npe += 1;
+            retval
+        }
+        _ => {
+            if let Some(pset) = *pset {
+                /* Call user pset routine to update preconditioner */
+                let KINMem { kin_uu, kin_uscale, kin_fval, kin_fscale, kin_user_data, .. } =
+                    kin_mem;
+                let retval = pset(kin_uu, kin_uscale, kin_fval, kin_fscale, kin_user_data);
+                *npe += 1;
+                retval
+            } else {
+                0
+            }
+        }
     }
 }
 
@@ -832,8 +845,12 @@ pub fn kinLsInitialize(kin_mem: &mut KINMem, kinls_mem: &mut KINLsMem) -> i32 {
 
     /* if J is NULL and: NOT preconditioning or do NOT need to setup the
        preconditioner, then set the lsetup function to NULL
-       (setup_disabled carries the C `kin_lsetup = NULL` state) */
-    if kinls_mem.J.is_none() && (kinls_mem.psolve.is_none() || kinls_mem.pset.is_none()) {
+       (setup_disabled carries the C `kin_lsetup = NULL` state; the
+       kinsol_bbdpre module supplies both pset and psolve in C) */
+    if kinls_mem.J.is_none()
+        && !matches!(kinls_mem.prec_module, PrecModule::BBDPre(_))
+        && (kinls_mem.psolve.is_none() || kinls_mem.pset.is_none())
+    {
         kinls_mem.setup_disabled = SUNTRUE;
     }
 
@@ -1052,6 +1069,7 @@ fn kinLsSolveIterative(
         jtimesDQ,
         jt_func,
         psolve,
+        prec_module,
         new_uu,
         ..
     } = kinls_mem;
@@ -1060,9 +1078,10 @@ fn kinLsSolveIterative(
     let jt_func = *jt_func;
     let psolve_fn = *psolve;
 
-    /* In C, PSolve is registered with the LS only when the user
-       supplied a non-NULL psolve (KINSetPreconditioner). */
-    let has_psolve = psolve_fn.is_some();
+    /* In C, PSolve is registered with the LS only when a non-NULL
+       psolve was supplied (KINSetPreconditioner) — either by the user
+       or by the kinsol_bbdpre module. */
+    let has_psolve = psolve_fn.is_some() || matches!(prec_module, PrecModule::BBDPre(_));
 
     let fscale = std::mem::take(&mut kin_mem.kin_fscale);
     let kinm = RefCell::new(&mut *kin_mem);
@@ -1094,11 +1113,16 @@ fn kinLsSolveIterative(
 
         /* note: user-supplied preconditioning with KINSOL does not
            support either the 'tol' or 'lr' inputs */
-        let ret = if let Some(ps) = psolve_fn {
-            let KINMem { kin_uu, kin_uscale, kin_fval, kin_user_data, .. } = kmr;
-            ps(kin_uu, kin_uscale, kin_fval, fscale_ref, z, kin_user_data)
-        } else {
-            0
+        let ret = match prec_module {
+            PrecModule::BBDPre(pdata) => KINBBDPrecSolve(kmr, pdata, z),
+            _ => {
+                if let Some(ps) = psolve_fn {
+                    let KINMem { kin_uu, kin_uscale, kin_fval, kin_user_data, .. } = kmr;
+                    ps(kin_uu, kin_uscale, kin_fval, fscale_ref, z, kin_user_data)
+                } else {
+                    0
+                }
+            }
         };
         *nps += 1;
         ret
