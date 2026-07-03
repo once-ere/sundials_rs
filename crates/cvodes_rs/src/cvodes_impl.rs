@@ -362,8 +362,10 @@ pub const CV_FAIL_OTHER: i32 = 2;
 pub enum LsModule {
     #[default]
     None,
-    /* Ls(Box<CVLsMem>)     -- cvodes_ls.rs interface (CVodeSetLinearSolver) */
-    /* Diag(Box<CVDiagMem>) -- cvodes_diag.rs diagonal approximation (CVDiag) */
+    /// cvodes_ls.rs interface (CVodeSetLinearSolver)
+    Ls(Box<crate::cvodes_ls_impl::CVLsMem>),
+    /// cvodes_diag.rs diagonal approximation (CVDiag)
+    Diag(Box<crate::cvodes_diag_impl::CVDiagMem>),
 }
 
 impl LsModule {
@@ -758,7 +760,7 @@ pub struct CVodeMem {
        when cvodes_proj_impl.rs lands (mirroring the donor's
        cvode_proj_impl.rs); until then an opaque box keeps the field
        and the C name. */
-    pub proj_mem: Option<Box<dyn std::any::Any>>, /* projection memory structure  */
+    pub proj_mem: Option<Box<crate::cvodes_proj_impl::CVodeProjMem>>, /* projection memory structure  */
     pub proj_enabled: bool,   /* flag indicating if projection is enabled  */
     pub proj_applied: bool,   /* flag indicating if projection was applied */
     pub proj_p: [f64; L_MAX], /* coefficients of p(x) (degree q poly)      */
