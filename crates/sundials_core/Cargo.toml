@@ -1,0 +1,8 @@
+[package]
+name = "sundials_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-Rust translation of the shared SUNDIALS v7.7.0 core (nvector, sunmatrix, sunlinsol, sunnonlinsol, controllers, utilities)"
+
+[dependencies]

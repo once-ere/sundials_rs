@@ -1,0 +1,65 @@
+[package]
+name = "cvode_rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-Rust, memory-safe translation of CVODE v7.7.0 (SUNDIALS)"
+
+[dependencies]
+sundials_core = { path = "../sundials_core" }
+
+# Translated CVODE serial examples (from cvode-7.7.0/examples/cvode/serial)
+# plus the new solar_system example.
+[[example]]
+name = "cvRoberts_dns"
+
+[[example]]
+name = "cvRoberts_dnsL"
+
+[[example]]
+name = "cvRoberts_dns_uw"
+
+[[example]]
+name = "cvRoberts_dns_constraints"
+
+[[example]]
+name = "cvRoberts_dns_negsol"
+
+[[example]]
+name = "cvAdvDiff_bnd"
+
+[[example]]
+name = "cvAdvDiff_bndL"
+
+[[example]]
+name = "cvDiurnal_kry"
+
+[[example]]
+name = "cvDiurnal_kry_bp"
+
+[[example]]
+name = "cvDirectDemo_ls"
+
+[[example]]
+name = "cvKrylovDemo_ls"
+
+[[example]]
+name = "cvKrylovDemo_prec"
+
+[[example]]
+name = "cvDisc_dns"
+
+[[example]]
+name = "cvAnalytic_mels"
+
+[[example]]
+name = "cvParticle_dns"
+
+[[example]]
+name = "cvPendulum_dns"
+
+[[example]]
+name = "cvRocket_dns"
+
+[[example]]
+name = "solar_system"

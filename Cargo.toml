@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sundials_core",
+    "crates/cvode_rs",
+    "crates/cvodes_rs",
+    "crates/kinsol_rs",
+    "crates/ida_rs",
+    "crates/idas_rs",
+    "crates/arkode_rs",
+]
+
+[workspace.package]
+version = "7.7.0"
+edition = "2021"
+license = "BSD-3-Clause"
+
+[profile.release]
+opt-level = 3
