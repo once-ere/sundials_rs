@@ -695,9 +695,13 @@ pub fn idaLsPSetup(
         }
         _ => {
             if let Some(pset) = *pset {
-                /* Call user pset routine to update preconditioner */
-                let IDAMem { ida_tn, ida_cj, ida_user_data, .. } = ida_mem;
-                let retval = pset(*ida_tn, ycur, ypcur, rcur, *ida_cj, ida_user_data);
+                /* Call user pset routine to update preconditioner. ida_ewt /
+                   ida_hh are handed in directly: they are what a C user pset
+                   fetches via IDAGetErrWeights / IDAGetCurrentStep (see
+                   IDALsPrecSetupFn note). */
+                let IDAMem { ida_tn, ida_cj, ida_ewt, ida_hh, ida_user_data, .. } = ida_mem;
+                let retval =
+                    pset(*ida_tn, ycur, ypcur, rcur, *ida_cj, ida_ewt, *ida_hh, ida_user_data);
                 *npe += 1;
                 retval
             } else {

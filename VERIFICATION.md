@@ -89,12 +89,35 @@ re-confirmed byte-for-byte against those binaries on this machine.
 | idaRoberts_dns | identical (stdout; shipped .csv is stale pre-7.7.0 stats format, our CSV matches 7.7.0 ida_io.c) |
 | idaAnalytic_mels | identical (custom matrix-embedded LS) |
 | idaFoodWeb_bnd | local-C(byte-identical stdout to local C 7.7.0 -ffp-contract=off build; shipped .out foreign-libm, last-digit h drift at t≥0.7 after sin() usage) |
-| idaFoodWeb_kry | todo |
+| idaFoodWeb_kry | solution-correct; UNRESOLVED nst/nli divergence (see note) |
 | idaHeat2D_bnd | todo |
 | idaHeat2D_kry | todo |
 | idaKrylovDemo_ls | todo |
 | idaSlCrank_dns | todo |
 | idaHeat2D_klu / idaRoberts_klu / idaRoberts_sps | excluded(KLU/SuperLU) |
+
+### idaFoodWeb_kry note (open issue)
+
+Concentration columns (t, bottom-left, top-right) match the shipped .out
+(== local C 7.7.0) to displayed precision, but nst/k/h and the final-stats
+counters (nli 641 vs 1034, nps, nst 188 vs 165) diverge. Root cause NOT
+found despite deep instrumented C-vs-Rust comparison. Established, on this
+machine (so not libm — idaFoodWeb_bnd is RUST==LOCALC):
+- First Precond call byte-identical (hh, ewt, cxy, cpxy, rates, inc, P block).
+- Preconditioner `rates` always consistent with cc; delta/tol identical every
+  solve; solve boundaries identical; SPGMR default gstype = MODIFIED_GS (same).
+- Jv formula (idaLsDQJtimes) + linear_sum_with a==-b VScaleDiff special case
+  verified correct; nrmfac/eplifac/dqincfac identical; restart path not taken.
+- Shared SPGMR core is byte-identical in cvKrylovDemo_prec (both GS types),
+  and IDA/CVODE both pass s1=s2=weight, so the scaled-GMRES path is exercised.
+- Divergence localises to the Krylov vector V input to Jv call ~13 (v-norm
+  0.577 vs 0.799 — gross, not sub-ULP) after Jv calls 0-12 matched exactly;
+  i.e. a GMRES solve converged in a different iteration count. The first ~11
+  Jv calls have near-constant v-norm ≈1.00002 (likely the IDACalcIC phase).
+Next lead to try: instrument the SPGMR core (rho/givens/Hessenberg per inner
+iteration) rebuilt for C, and IDA's IC-phase linear solves specifically; or
+element-wise (not checksum) compare Jv call 12 output for a hidden sub-ULP
+seed. Scratch has kry_dbg.c/ida_ls_dbg.o harness for instrumented C builds.
 
 ## idas_rs (Phase 5)
 

@@ -42,12 +42,23 @@ pub type IDALsJacFn = fn(
     tmp3: &mut NVector,
 ) -> i32;
 
+/* C's IDALsPrecSetupFn is (tt, yy, yp, rr, c_j, user_data); a user pset
+   that needs the current error-weight vector or step size fetches them
+   inside the callback via IDAGetErrWeights / IDAGetCurrentStep on a stored
+   ida_mem handle (e.g. idaFoodWeb_kry's Precond). A pure-Rust callback
+   cannot re-borrow the integrator it is running inside, so — exactly as
+   the port already hands `c_j` by value — the two integrator-internal
+   quantities those getters return (ida_ewt, ida_hh) are passed in
+   directly. They are byte-identical to what the C getters would copy out
+   at pset time. Callbacks that don't need them ignore the extra args. */
 pub type IDALsPrecSetupFn = fn(
     tt: f64,
     yy: &NVector,
     yp: &NVector,
     rr: &NVector,
     c_j: f64,
+    ewt: &NVector,
+    hh: f64,
     user_data: &mut UserData,
 ) -> i32;
 
