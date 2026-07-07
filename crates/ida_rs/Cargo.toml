@@ -29,3 +29,6 @@ name = "idaSlCrank_dns"
 
 [[example]]
 name = "idaHeat2D_kry"
+
+[[example]]
+name = "idaKrylovDemo_ls"

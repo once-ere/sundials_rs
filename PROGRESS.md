@@ -113,10 +113,15 @@ kinFerTron_klu (KLU), kinRoboKin_slu (SuperLU)
       round-trip test green)
 - [x] ida_cli.c — committed (IDASetOptions over sundials_core::sundials_cli)
 - 17/17 ida_rs unit tests green; crate builds warning-free.
-### ida examples — todo (Phase 4 verification): translate + byte-compare .out
-  serial set: idaRoberts_dns, idaAnalytic_mels, idaFoodWeb_bnd, idaFoodWeb_kry,
-  idaHeat2D_bnd, idaHeat2D_kry, idaKrylovDemo_ls, idaSlCrank_dns.
-  Resume point: wire tools/verify_examples.sh for ida, then Phase 5 (idas).
+### ida examples — COMPLETE (Phase 4 verification): all 8 serial examples ported + verified
+  idaRoberts_dns, idaAnalytic_mels, idaHeat2D_bnd, idaHeat2D_kry,
+  idaKrylovDemo_ls, idaSlCrank_dns = IDENTICAL to shipped; idaFoodWeb_kry =
+  IDENTICAL; idaFoodWeb_bnd = local-C (foreign-libm last-digit h drift). See
+  VERIFICATION.md. Library fix landed: idaLsSolve returned x(=0) instead of the
+  preconditioned residual on 0-iteration Krylov solves (LinearSolver::resid()
+  now exposes it) — was making every IDA Krylov example diverge.
+  NEXT: Phase 5 (idas_rs). cvode_ls.rs has the same latent nli==0 bug (task
+  chip spawned) — fix before cvsKrylov* examples.
 ### excluded (ida) examples
 idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
 

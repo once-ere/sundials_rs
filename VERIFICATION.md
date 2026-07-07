@@ -92,7 +92,7 @@ re-confirmed byte-for-byte against those binaries on this machine.
 | idaFoodWeb_kry | identical (SPGMR + user block-diag precond + IDACalcIC; fixed by nli==0 residual copy) |
 | idaHeat2D_bnd | identical (band DQ Jacobian + IDACalcIC + constraints) |
 | idaHeat2D_kry | identical (SPGMR + diagonal precond, 2 GS-type cases) |
-| idaKrylovDemo_ls | todo |
+| idaKrylovDemo_ls | identical (loops SPGMR/SPBCGS/SPTFQMR + diagonal precond) |
 | idaSlCrank_dns | identical (index-2 GGL DAE, dense DQ Jacobian, IDASetSuppressAlg) |
 | idaHeat2D_klu / idaRoberts_klu / idaRoberts_sps | excluded(KLU/SuperLU) |
 
