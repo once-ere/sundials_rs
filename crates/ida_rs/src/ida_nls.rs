@@ -118,7 +118,7 @@ pub fn IDAGetNonlinearSystemData(ida_mem: &IDAMem) -> (f64, f64) {
 /* `IDA_mem->ida_lsetup != NULL` guard: the lsetup hook exists when an
    IDALS module is attached and idaLsInitialize has not disabled it
    (ida_ls_impl.rs setup_disabled contract). */
-fn ida_has_lsetup(ida_mem: &IDAMem) -> bool {
+pub(crate) fn ida_has_lsetup(ida_mem: &IDAMem) -> bool {
     match &ida_mem.ida_lmem {
         LsModule::Ls(idals_mem) => !idals_mem.setup_disabled,
         LsModule::None => false,
