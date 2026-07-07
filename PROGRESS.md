@@ -95,17 +95,28 @@ cvsRoberts_FSA_klu, cvsRoberts_FSA_sps (KLU/SuperLU)
 ### excluded (kinsol) examples
 kinFerTron_klu (KLU), kinRoboKin_slu (SuperLU)
 
-## crates/ida_rs — Phase 4
-- [ ] ida_impl.h — todo
-- [ ] ida.c — todo
-- [ ] ida_ic.c — todo
-- [ ] ida_io.c — todo
-- [ ] ida_ls_impl.h — todo
-- [ ] ida_ls.c — todo
-- [ ] ida_nls.c — todo
-- [ ] ida_bbdpre_impl.h — todo
-- [ ] ida_bbdpre.c — todo
-- [ ] ida_cli.c — todo
+## crates/ida_rs — Phase 4: LIBRARY COMPLETE (every ida/*.c ported)
+- [x] ida_impl.h — committed (IDAMem)
+- [x] ida.c — committed (PART 1 init/tolerances/RootInit/IDASolve/GetDky/alloc/
+      InitialSetup; PART 2 IDAStep/Predict/TestError/HandleNFlag/CompleteStep/
+      Restore/Reset + rootfinding Rcheck1-3/Rootfind + GetSolution)
+- [x] ida_ic.c — committed (IDACalcIC + IDANlsIC/NewtonIC/LineSrch/fnorm/
+      Newyyp/Newy/ICFailFlag; workspace aliasing delnew=phi[2]/dtemp=phi[3]/
+      ynew=tempv2/ypnew=ee)
+- [x] ida_io.c — committed (62/62 fns: all Set/Get families, IC setters,
+      IDAPrintAllStats byte-format helpers, IDAGetReturnFlagName)
+- [x] ida_ls_impl.h — committed (IDALsMem; PrecModule +BBDPre variant)
+- [x] ida_ls.c — committed (full LS interface; BBDPre psetup/psolve dispatch)
+- [x] ida_nls.c — committed (IDANls Newton solve collapsed onto IDAMem)
+- [x] ida_bbdpre_impl.h — committed (IBBDPrecData)
+- [x] ida_bbdpre.c — committed (serial band reduction; DQ Jacobian + band LU
+      round-trip test green)
+- [x] ida_cli.c — committed (IDASetOptions over sundials_core::sundials_cli)
+- 17/17 ida_rs unit tests green; crate builds warning-free.
+### ida examples — todo (Phase 4 verification): translate + byte-compare .out
+  serial set: idaRoberts_dns, idaAnalytic_mels, idaFoodWeb_bnd, idaFoodWeb_kry,
+  idaHeat2D_bnd, idaHeat2D_kry, idaKrylovDemo_ls, idaSlCrank_dns.
+  Resume point: wire tools/verify_examples.sh for ida, then Phase 5 (idas).
 ### excluded (ida) examples
 idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
 
