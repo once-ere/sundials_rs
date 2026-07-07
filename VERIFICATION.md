@@ -86,13 +86,13 @@ re-confirmed byte-for-byte against those binaries on this machine.
 
 | example | status |
 |---|---|
-| idaAnalytic_mels | todo |
-| idaFoodWeb_bnd | todo |
+| idaRoberts_dns | identical (stdout; shipped .csv is stale pre-7.7.0 stats format, our CSV matches 7.7.0 ida_io.c) |
+| idaAnalytic_mels | identical (custom matrix-embedded LS) |
+| idaFoodWeb_bnd | local-C(byte-identical stdout to local C 7.7.0 -ffp-contract=off build; shipped .out foreign-libm, last-digit h drift at t≥0.7 after sin() usage) |
 | idaFoodWeb_kry | todo |
 | idaHeat2D_bnd | todo |
 | idaHeat2D_kry | todo |
 | idaKrylovDemo_ls | todo |
-| idaRoberts_dns | todo |
 | idaSlCrank_dns | todo |
 | idaHeat2D_klu / idaRoberts_klu / idaRoberts_sps | excluded(KLU/SuperLU) |
 

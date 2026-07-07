@@ -14,3 +14,6 @@ name = "idaRoberts_dns"
 
 [[example]]
 name = "idaAnalytic_mels"
+
+[[example]]
+name = "idaFoodWeb_bnd"
