@@ -93,7 +93,7 @@ re-confirmed byte-for-byte against those binaries on this machine.
 | idaHeat2D_bnd | identical (band DQ Jacobian + IDACalcIC + constraints) |
 | idaHeat2D_kry | todo |
 | idaKrylovDemo_ls | todo |
-| idaSlCrank_dns | todo |
+| idaSlCrank_dns | identical (index-2 GGL DAE, dense DQ Jacobian, IDASetSuppressAlg) |
 | idaHeat2D_klu / idaRoberts_klu / idaRoberts_sps | excluded(KLU/SuperLU) |
 
 ### idaFoodWeb_kry note (open issue)
