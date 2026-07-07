@@ -38,7 +38,7 @@ pub struct PcgLS {
     maxl: i32,
     pretype: i32,
     /* workspace vectors, all allocated by the constructor as in C */
-    r: NVector,
+    pub r: NVector,
     p: NVector,
     z: NVector,
     ap: NVector,

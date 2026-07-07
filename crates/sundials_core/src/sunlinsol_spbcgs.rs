@@ -37,7 +37,7 @@ pub struct SpbcgsLS {
     pretype: i32,
     /* workspace vectors, all allocated by the constructor as in C */
     r_star: NVector,
-    r: NVector,
+    pub r: NVector,
     p: NVector,
     q: NVector,
     u: NVector,

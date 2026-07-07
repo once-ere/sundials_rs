@@ -26,3 +26,6 @@ name = "idaHeat2D_bnd"
 
 [[example]]
 name = "idaSlCrank_dns"
+
+[[example]]
+name = "idaHeat2D_kry"

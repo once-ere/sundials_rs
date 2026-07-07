@@ -52,7 +52,10 @@ pub struct SpgmrLS {
     yg: Vec<f64>,         /* length maxl+1 */
     cv: Vec<f64>,         /* length maxl+1 scalar workspace (classical GS) */
     xcor: NVector,
-    vtemp: NVector,
+    /// SUNLinSolResid_SPGMR returns this vector (the left-preconditioned,
+    /// unscaled residual after setup); idaLsSolve/cvLsSolve read it when the
+    /// solve converges in 0 iterations.
+    pub vtemp: NVector,
 }
 
 /* ----------------------------------------------------------------------------

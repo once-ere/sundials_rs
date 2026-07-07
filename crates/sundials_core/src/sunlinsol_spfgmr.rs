@@ -50,7 +50,7 @@ pub struct SpfgmrLS {
     yg: Vec<f64>,         /* length maxl+1 */
     cv: Vec<f64>,         /* length maxl+1 scalar workspace (classical GS) */
     xcor: NVector,
-    vtemp: NVector,
+    pub vtemp: NVector,
 }
 
 /* ----------------------------------------------------------------------------

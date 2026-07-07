@@ -255,6 +255,24 @@ impl LinearSolver {
         }
     }
 
+    /// SUNLinSolResid: the residual N_Vector each iterative solver exposes
+    /// (spgmr/spfgmr vtemp, spbcgs/pcg r, sptfqmr vtemp1). idaLsSolve/
+    /// cvLsSolve copy this into b when the solve converges in 0 iterations
+    /// (the preconditioned residual of the zero initial guess). Not defined
+    /// for direct/matrix-embedded solvers.
+    pub fn resid(&self) -> &NVector {
+        match self {
+            LinearSolver::Spgmr(s) => &s.vtemp,
+            LinearSolver::Spfgmr(s) => &s.vtemp,
+            LinearSolver::Spbcgs(s) => &s.r,
+            LinearSolver::Sptfqmr(s) => &s.vtemp1,
+            LinearSolver::Pcg(s) => &s.r,
+            LinearSolver::Dense(_) | LinearSolver::Band(_) | LinearSolver::Custom(_) => {
+                unreachable!("SUNLinSolResid is only defined for iterative solvers")
+            }
+        }
+    }
+
     /// SUNLinSolLastFlag
     pub fn last_flag(&self) -> i64 {
         match self {

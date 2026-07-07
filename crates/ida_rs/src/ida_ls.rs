@@ -1382,14 +1382,19 @@ pub fn idaLsSolve(
         /* Retrieve solver statistics (resnorm dropped: logging only) */
         let nli_inc = idals_mem.LS.num_iters();
 
-        /* Copy x to b.  ADAPTATION (donor cvode_ls.rs finish_solve): when
-           nli_inc == 0 and the LS is not matrix-embedded the C instead
-           copies the LS residual vector — the preconditioned residual of
-           the zero initial guess, N_VScale(ONE, SUNLinSolResid(LS), b).
-           The workspace iterative solvers keep that vector private, so x
-           (= 0, whose preconditioned residual already met the tolerance)
-           is returned, exactly as the verified donor does. */
-        b.data.copy_from_slice(&idals_mem.x.data);
+        /* Copy appropriate result to b (C ida_ls.c idaLsSolve): when the
+           solve converged in 0 iterations (and the LS is not matrix-
+           embedded) the correction is the LS residual vector — the
+           preconditioned residual of the zero initial guess,
+           N_VScale(ONE, SUNLinSolResid(LS), b) — NOT x (which is still 0).
+           Returning x=0 gives a spurious zero Newton correction and derails
+           the step trajectory whenever the preconditioner alone meets the
+           linear tolerance (e.g. idaHeat2D_kry). Otherwise copy x. */
+        if nli_inc == 0 && !matches!(idals_mem.LS, LinearSolver::Custom(_)) {
+            b.data.copy_from_slice(&idals_mem.LS.resid().data);
+        } else {
+            b.data.copy_from_slice(&idals_mem.x.data);
+        }
 
         /* Increment nli counter */
         idals_mem.nli += nli_inc as i64;

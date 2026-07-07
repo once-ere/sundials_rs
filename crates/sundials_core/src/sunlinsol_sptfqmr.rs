@@ -48,7 +48,7 @@ pub struct SptfqmrLS {
     r_0: NVector, /* C: r[0] */
     r_1: NVector, /* C: r[1] */
     u: NVector,
-    vtemp1: NVector,
+    pub vtemp1: NVector,
     vtemp2: NVector,
     vtemp3: NVector,
 }
