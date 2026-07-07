@@ -11,3 +11,6 @@ sundials_core = { path = "../sundials_core" }
 # Translated IDA serial examples (from sundials-7.7.0/examples/ida/serial)
 [[example]]
 name = "idaRoberts_dns"
+
+[[example]]
+name = "idaAnalytic_mels"
