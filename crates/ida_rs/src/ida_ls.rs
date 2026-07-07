@@ -22,6 +22,7 @@
  * -----------------------------------------------------------------*/
 use std::cell::RefCell;
 
+use crate::ida_bbdpre::{IDABBDPrecSetup, IDABBDPrecSolve};
 use crate::ida_impl::*;
 use crate::ida_ls_impl::*;
 use crate::nvector_serial::*;
@@ -683,15 +684,26 @@ pub fn idaLsPSetup(
     ypcur: &NVector,
     rcur: &NVector,
 ) -> i32 {
-    let IDALsMem { pset, npe, .. } = idals_mem;
-    if let Some(pset) = *pset {
-        /* Call user pset routine to update preconditioner */
-        let IDAMem { ida_tn, ida_cj, ida_user_data, .. } = ida_mem;
-        let retval = pset(*ida_tn, ycur, ypcur, rcur, *ida_cj, ida_user_data);
-        *npe += 1;
-        retval
-    } else {
-        0
+    let IDALsMem { pset, prec_module, npe, .. } = idals_mem;
+    match prec_module {
+        /* internal ida_bbdpre module (C pset = IDABBDPrecSetup) */
+        PrecModule::BBDPre(pdata) => {
+            let (tn, cj) = (ida_mem.ida_tn, ida_mem.ida_cj);
+            let retval = IDABBDPrecSetup(ida_mem, pdata, tn, cj, ycur, ypcur);
+            *npe += 1;
+            retval
+        }
+        _ => {
+            if let Some(pset) = *pset {
+                /* Call user pset routine to update preconditioner */
+                let IDAMem { ida_tn, ida_cj, ida_user_data, .. } = ida_mem;
+                let retval = pset(*ida_tn, ycur, ypcur, rcur, *ida_cj, ida_user_data);
+                *npe += 1;
+                retval
+            } else {
+                0
+            }
+        }
     }
 }
 
@@ -1139,7 +1151,9 @@ pub fn idaLsInitialize(ida_mem: &mut IDAMem, idals_mem: &mut IDALsMem) -> i32 {
        not need to be called, so disable the lsetup dispatch
        (C ida_ls.c:1333 sets IDA_mem->ida_lsetup = NULL; setup_disabled
        carries that state, see ida_ls_impl.rs) */
-    idals_mem.setup_disabled = idals_mem.J.is_none() && idals_mem.pset.is_none();
+    idals_mem.setup_disabled = idals_mem.J.is_none()
+        && idals_mem.pset.is_none()
+        && !matches!(idals_mem.prec_module, PrecModule::BBDPre(_));
 
     /* When using a matrix-embedded linear solver disable lsetup call
        (C ida_ls.c:1339) */
@@ -1251,7 +1265,9 @@ pub fn idaLsSetup(
     idals_mem.last_flag = if direct_setup {
         let IDALsMem { LS, J, .. } = idals_mem;
         LS.setup(J.as_mut())
-    } else if idals_mem.pset.is_some() {
+    } else if idals_mem.pset.is_some()
+        || matches!(idals_mem.prec_module, PrecModule::BBDPre(_))
+    {
         let retval = idaLsPSetup(ida_mem, idals_mem, y, yp, r);
         if retval != 0 {
             if retval < 0 { SUNLS_PSET_FAIL_UNREC } else { SUNLS_PSET_FAIL_REC }
@@ -1447,6 +1463,7 @@ fn idaLsSolveIterative(
         jtimesDQ,
         jt_res,
         psolve,
+        prec_module,
         nrmfac,
         dqincfac,
         ..
@@ -1458,9 +1475,17 @@ fn idaLsSolveIterative(
     let nrmfac = *nrmfac;
     let dqincfac = *dqincfac;
 
+    /* The internal ida_bbdpre module dispatches its psolve through the
+       PrecModule payload rather than a psolve fn pointer. */
+    let mut bbd_pdata = match prec_module {
+        PrecModule::BBDPre(p) => Some(&mut **p),
+        _ => None,
+    };
+
     /* In C, PSolve is registered with the LS only when a non-NULL
-       psolve was supplied (IDASetPreconditioner). */
-    let has_psolve = psolve_fn.is_some();
+       psolve was supplied (IDASetPreconditioner), or the ida_bbdpre
+       module installed IDABBDPrecSolve. */
+    let has_psolve = psolve_fn.is_some() || bbd_pdata.is_some();
 
     let idam = RefCell::new(&mut *ida_mem);
 
@@ -1489,6 +1514,9 @@ fn idaLsSolveIterative(
         let ret = if let Some(ps) = psolve_fn {
             let IDAMem { ida_tn, ida_cj, ida_user_data, .. } = imr;
             ps(*ida_tn, ycur, ypcur, rescur, r, z, *ida_cj, ptol, ida_user_data)
+        } else if let Some(pdata) = bbd_pdata.as_deref_mut() {
+            /* internal ida_bbdpre module (C psolve = IDABBDPrecSolve) */
+            IDABBDPrecSolve(pdata, r, z)
         } else {
             0
         };

@@ -96,6 +96,8 @@ pub enum PrecModule {
     None,
     /// user-supplied pset/psolve get user_data
     User,
+    /// internal ida_bbdpre band-block-diagonal preconditioner
+    BBDPre(Box<crate::ida_bbdpre_impl::IBBDPrecData>),
 }
 
 /* -----------------------------------------------------------------

@@ -43,6 +43,7 @@ pub use sundials_core::sunnonlinsol_fixedpoint;
 
 // IDA proper (modules land phase by phase; see ../../PROGRESS.md)
 pub mod ida_impl;
+pub mod ida_bbdpre_impl;
 pub mod ida_ls_impl;
 pub mod ida;
 pub mod ida_ic;
@@ -54,6 +55,7 @@ pub mod ida_cli;
 
 // Flat prelude so examples can `use ida_rs::*;` like a C `#include`.
 pub use crate::ida_impl::*;
+pub use crate::ida_bbdpre_impl::*;
 pub use crate::ida_ls_impl::*;
 pub use crate::ida::*;
 pub use crate::ida_ic::*;
