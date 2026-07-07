@@ -20,3 +20,6 @@ name = "idaFoodWeb_bnd"
 
 [[example]]
 name = "idaFoodWeb_kry"
+
+[[example]]
+name = "idaHeat2D_bnd"

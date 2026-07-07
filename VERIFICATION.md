@@ -90,7 +90,7 @@ re-confirmed byte-for-byte against those binaries on this machine.
 | idaAnalytic_mels | identical (custom matrix-embedded LS) |
 | idaFoodWeb_bnd | local-C(byte-identical stdout to local C 7.7.0 -ffp-contract=off build; shipped .out foreign-libm, last-digit h drift at t≥0.7 after sin() usage) |
 | idaFoodWeb_kry | solution-correct; UNRESOLVED nst/nli divergence (see note) |
-| idaHeat2D_bnd | todo |
+| idaHeat2D_bnd | identical (band DQ Jacobian + IDACalcIC + constraints) |
 | idaHeat2D_kry | todo |
 | idaKrylovDemo_ls | todo |
 | idaSlCrank_dns | todo |
