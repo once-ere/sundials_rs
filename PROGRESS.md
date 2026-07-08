@@ -55,28 +55,30 @@ sundials_cuda.h/hip.h/sycl.h etc. (GPU headers); fmod_* (Fortran)
 cvode_fused_gpu.cpp (GPU; stubs ported); examples cvRoberts_klu,
 cvRoberts_block_klu, cvRoberts_sps (KLU/SuperLU)
 
-## crates/cvodes_rs — Phase 2
+## crates/cvodes_rs — Phase 2: LIBRARY COMPLETE (every cvodes/*.c ported)
 - [x] cvodes_impl.h — committed
-- [~] cvodes.c — PARTS 1+2/3 written (lines 1-6244: init/tolerances + CVode driver, Get* extraction, Free family, alloc/free vectors, cvInitialSetup, cvHin family; part 2 type-checked in an isolated harness against pinned PART 3 stubs); part 3 (6245-end, incl. cvStep 5874-6244) pending
-- [ ] cvodes_io.c — todo
+- [x] cvodes.c — committed (PART 1 init/tolerances, PART 2 CVode driver +
+      extraction + Free + cvInitialSetup/cvHin, PART 3 cvStep machinery, NLS
+      drivers, error/eta handling, rootfinding, ewt/norms, sens DQ RHS)
+- [x] cvodes_io.c — committed
 - [x] cvodes_ls_impl.h — committed
 - [x] cvodes_ls.c — committed
-- [ ] cvodes_nls.c — todo
-- [ ] cvodes_nls_sim.c — todo
-- [ ] cvodes_nls_stg.c — todo
-- [ ] cvodes_nls_stg1.c — todo
+- [x] cvodes_nls.c — committed
+- [x] cvodes_nls_sim.c — committed
+- [x] cvodes_nls_stg.c — committed
+- [x] cvodes_nls_stg1.c — committed
 - [x] cvodes_diag_impl.h — committed
 - [x] cvodes_diag.c — committed
 - [x] cvodes_proj_impl.h — committed
 - [x] cvodes_proj.c — committed
-- [ ] cvodes_bandpre_impl.h — todo
-- [ ] cvodes_bandpre.c — todo
-- [ ] cvodes_bbdpre_impl.h — todo
-- [ ] cvodes_bbdpre.c — todo
-- [ ] cvodes_resize.c — todo
-- [ ] cvodes_cli.c — todo
-- [ ] cvodea.c — todo
-- [ ] cvodea_io.c — todo
+- [x] cvodes_bandpre_impl.h — committed
+- [x] cvodes_bandpre.c — committed
+- [x] cvodes_bbdpre_impl.h — committed
+- [x] cvodes_bbdpre.c — committed
+- [x] cvodes_resize.c — committed
+- [x] cvodes_cli.c — committed
+- [x] cvodea.c — committed (adjoint: checkpointing, backward problems, Hermite/polynomial interpolation)
+- [x] cvodea_io.c — committed
 ### excluded (cvodes) examples
 cvsRoberts_klu, cvsRoberts_sps, cvsRoberts_ASAi_klu, cvsRoberts_ASAi_sps,
 cvsRoberts_FSA_klu, cvsRoberts_FSA_sps (KLU/SuperLU)
