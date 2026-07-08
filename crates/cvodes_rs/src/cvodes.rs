@@ -39,6 +39,8 @@
 use crate::cvodes_impl::*;
 use crate::nvector_serial::*;
 use crate::sundials_context::SUNContext;
+use crate::sundials_errors::SUN_ERR_ARG_CORRUPT;
+use crate::sundials_nonlinearsolver::SUN_NLS_CONV_RECVR;
 use crate::sundials_types::*;
 use crate::sunnonlinsol_newton::SUNNonlinSol_Newton;
 
@@ -4333,7 +4335,4137 @@ fn cvYddNorm(cv_mem: &mut CVodeMem, hg: f64, yddnrm: &mut f64) -> i32 {
 }
 
 // ===================== END PART 2 (cvodes.c:2913-6244) =====================
-// PART 3 (step machinery: cvAdjustParams..cvBDFStab, nls drivers cvNls/
-// cvStgrNls/cvStgr1Nls, error/convergence handling, ewt/sens norms, sens RHS
-// wrappers + DQ, rootfinding cvRcheck/cvRootfind, cvProcessError —
-// cvodes.c:6245-10126) is appended below by the next agent.
+// ===================== PART 3 (cvodes.c:5874-10126) ========================
+
+/*
+ * cvStep
+ *
+ * This routine performs one internal cvode step, from tn to tn + h.
+ * It calls other routines to do all the work.
+ *
+ * The main operations done here are as follows:
+ * - preliminary adjustments if a new step size was chosen;
+ * - prediction of the Nordsieck history array zn at tn + h;
+ * - setting of multistep method coefficients and test quantities;
+ * - solution of the nonlinear system;
+ * - testing the local error;
+ * - updating zn and other state data if successful;
+ * - resetting stepsize and order for the next step.
+ * - if SLDET is on, check for stability, reduce order if necessary.
+ * On a failure in the nonlinear system solution or error test, the
+ * step may be reattempted, depending on the nature of the failure.
+ */
+fn cvStep(cv_mem: &mut CVodeMem) -> i32 {
+    /* Are we computing sensitivities with a staggered approach? */
+    let do_sensi_stg = cv_mem.cv_sensi && cv_mem.cv_ism == CV_STAGGERED;
+    let do_sensi_stg1 = cv_mem.cv_sensi && cv_mem.cv_ism == CV_STAGGERED1;
+
+    /* Initialize failure counters for this step attempt */
+    let mut ncf = 0; /* corrector failures  */
+    let mut npf = 0; /* projection failures */
+    let mut nef = 0; /* error test failures */
+    let mut step_constraint_fails = 0;
+
+    let mut ncfS = 0; /* sensitivity corrector failures           */
+    let mut nefS = 0; /* sensitivity error test fails             */
+    let mut nefQ = 0; /* quadrature error test fails              */
+    let mut nefQS = 0; /* quadrature sensitivity error test fails  */
+
+    if do_sensi_stg1 {
+        for is in 0..cv_mem.cv_Ns as usize {
+            cv_mem.cv_ncfS1[is] = 0;
+        }
+    }
+
+    /* If the step size has changed, update the history array */
+    if cv_mem.cv_nst > 0 && cv_mem.cv_hprime != cv_mem.cv_h {
+        cvAdjustParams(cv_mem);
+    }
+
+    /* Check if this step should be projected */
+    let mut do_projection = SUNFALSE;
+    if cv_mem.proj_enabled {
+        let pm = cv_mem.proj_mem.as_deref().unwrap();
+        do_projection =
+            pm.freq > 0 && (cv_mem.cv_nst == 0 || cv_mem.cv_nst >= pm.nstlprj + pm.freq);
+    }
+
+    /* Looping point for attempts to take a step */
+
+    let saved_t = cv_mem.cv_tn; /* tn is updated in cvPredict */
+    let mut nflag = FIRST_CALL;
+    let mut kflag;
+    let mut dsm = ZERO;
+    let mut dsmQ = ZERO;
+    let mut dsmS = ZERO;
+    let mut dsmQS = ZERO;
+
+    loop {
+        cvPredict(cv_mem);
+        cvSet(cv_mem);
+
+        /* ------ Correct state variables ------ */
+
+        nflag = cvNls(cv_mem, nflag);
+        {
+            let mut ncfn_l = cv_mem.cv_ncfn;
+            kflag = cvHandleNFlag(cv_mem, &mut nflag, saved_t, &mut ncf, &mut ncfn_l);
+            cv_mem.cv_ncfn = ncfn_l;
+        }
+
+        /* Go back in loop if we need to predict again (nflag=PREV_CONV_FAIL) */
+        if kflag == PREDICT_AGAIN {
+            continue;
+        }
+
+        /* Return if nonlinear solve failed and recovery is not possible. */
+        if kflag != DO_ERROR_TEST {
+            return kflag;
+        }
+
+        /* Check inequality constraints */
+        if !cv_mem.cv_constraints.is_empty() {
+            let cflag =
+                cvCheckConstraints(cv_mem, &mut nflag, saved_t, &mut step_constraint_fails);
+
+            /* Go back in loop if we need to predict again (nflag=PREV_CONV_FAIL) */
+            if cflag == PREDICT_AGAIN {
+                continue;
+            }
+
+            /* Return if the check failed and recovery is not possible. */
+            if cflag != CV_SUCCESS {
+                return cflag;
+            }
+        }
+
+        /* Check if a projection needs to be performed */
+        cv_mem.proj_applied = SUNFALSE;
+
+        if do_projection {
+            /* Perform projection (nflag=CV_SUCCESS) */
+            let pflag = crate::cvodes_proj::cvDoProjection(cv_mem, &mut nflag, saved_t, &mut npf);
+
+            /* Go back in loop if we need to predict again (nflag=PREV_PROJ_FAIL) */
+            if pflag == PREDICT_AGAIN {
+                continue;
+            }
+
+            /* Return if projection failed and recovery is not possible */
+            if pflag != CV_SUCCESS {
+                return pflag;
+            }
+        }
+
+        /* Perform error test (nflag=CV_SUCCESS) */
+        let eflag = {
+            let acnrm = cv_mem.cv_acnrm;
+            let mut netf_l = cv_mem.cv_netf;
+            let e = cvDoErrorTest(cv_mem, &mut nflag, saved_t, acnrm, &mut nef, &mut netf_l, &mut dsm);
+            cv_mem.cv_netf = netf_l;
+            e
+        };
+
+        /* Go back in loop if we need to predict again (nflag=PREV_ERR_FAIL) */
+        if eflag == TRY_AGAIN {
+            continue;
+        }
+
+        /* Return if error test failed and recovery is not possible. */
+        if eflag != CV_SUCCESS {
+            return eflag;
+        }
+
+        /* Error test passed (eflag=CV_SUCCESS, nflag=CV_SUCCESS), go on */
+
+        /* ------ Correct the quadrature variables ------ */
+
+        if cv_mem.cv_quadr {
+            ncf = 0;
+            nef = 0; /* reset counters for states */
+
+            nflag = cvQuadNls(cv_mem);
+            {
+                let mut ncfn_l = cv_mem.cv_ncfn;
+                kflag = cvHandleNFlag(cv_mem, &mut nflag, saved_t, &mut ncf, &mut ncfn_l);
+                cv_mem.cv_ncfn = ncfn_l;
+            }
+
+            if kflag == PREDICT_AGAIN {
+                continue;
+            }
+            if kflag != DO_ERROR_TEST {
+                return kflag;
+            }
+
+            /* Error test on quadratures */
+            if cv_mem.cv_errconQ {
+                cv_mem.cv_acnrmQ = N_VWrmsNorm(&cv_mem.cv_acorQ, &cv_mem.cv_ewtQ);
+                let eflag = {
+                    let acnrmQ = cv_mem.cv_acnrmQ;
+                    let mut netfQ_l = cv_mem.cv_netfQ;
+                    let e = cvDoErrorTest(cv_mem, &mut nflag, saved_t, acnrmQ, &mut nefQ, &mut netfQ_l, &mut dsmQ);
+                    cv_mem.cv_netfQ = netfQ_l;
+                    e
+                };
+
+                if eflag == TRY_AGAIN {
+                    continue;
+                }
+                if eflag != CV_SUCCESS {
+                    return eflag;
+                }
+
+                /* Set dsm = max(dsm, dsmQ) to be used in cvPrepareNextStep */
+                if dsmQ > dsm {
+                    dsm = dsmQ;
+                }
+            }
+        }
+
+        /* ------ Correct the sensitivity variables (STAGGERED or STAGGERED1) ------- */
+
+        if do_sensi_stg || do_sensi_stg1 {
+            ncf = 0;
+            nef = 0; /* reset counters for states     */
+            if cv_mem.cv_quadr {
+                nefQ = 0; /* reset counter for quadratures */
+            }
+
+            /* Evaluate f at converged y, needed for future evaluations of sens. RHS
+             * If f() fails recoverably, treat it as a convergence failure and
+             * attempt the step again */
+
+            let retval = {
+                let f = cv_mem.cv_f.unwrap();
+                f(
+                    cv_mem.cv_tn,
+                    &cv_mem.cv_y,
+                    &mut cv_mem.cv_ftemp,
+                    &mut cv_mem.cv_user_data,
+                )
+            };
+            cv_mem.cv_nfe += 1;
+
+            if retval < 0 {
+                return CV_RHSFUNC_FAIL;
+            }
+            if retval > 0 {
+                nflag = PREV_CONV_FAIL;
+                continue;
+            }
+
+            if do_sensi_stg {
+                /* Nonlinear solve for sensitivities (all-at-once) */
+                nflag = cvStgrNls(cv_mem);
+                let mut ncfnS_l = cv_mem.cv_ncfnS;
+                kflag = cvHandleNFlag(cv_mem, &mut nflag, saved_t, &mut ncfS, &mut ncfnS_l);
+                cv_mem.cv_ncfnS = ncfnS_l;
+            } else {
+                /* Nonlinear solve for sensitivities (one-by-one) */
+                for is in 0..cv_mem.cv_Ns as usize {
+                    cv_mem.sens_solve_idx = is as i32;
+
+                    nflag = cvStgr1Nls(cv_mem, is as i32);
+                    let mut ncf_l = cv_mem.cv_ncfS1[is] as i32;
+                    let mut ncfn_l = cv_mem.cv_ncfnS1[is];
+                    kflag = cvHandleNFlag(cv_mem, &mut nflag, saved_t, &mut ncf_l, &mut ncfn_l);
+                    cv_mem.cv_ncfS1[is] = ncf_l as i64;
+                    cv_mem.cv_ncfnS1[is] = ncfn_l;
+                    if kflag != DO_ERROR_TEST {
+                        break;
+                    }
+                }
+            }
+
+            if kflag == PREDICT_AGAIN {
+                continue;
+            }
+            if kflag != DO_ERROR_TEST {
+                return kflag;
+            }
+
+            /* Error test on sensitivities */
+            if cv_mem.cv_errconS {
+                if !cv_mem.cv_acnrmScur {
+                    cv_mem.cv_acnrmS = cvSensNorm(cv_mem, &cv_mem.cv_acorS, &cv_mem.cv_ewtS);
+                }
+
+                let eflag = {
+                    let acnrmS = cv_mem.cv_acnrmS;
+                    let mut netfS_l = cv_mem.cv_netfS;
+                    let e = cvDoErrorTest(cv_mem, &mut nflag, saved_t, acnrmS, &mut nefS, &mut netfS_l, &mut dsmS);
+                    cv_mem.cv_netfS = netfS_l;
+                    e
+                };
+
+                if eflag == TRY_AGAIN {
+                    continue;
+                }
+                if eflag != CV_SUCCESS {
+                    return eflag;
+                }
+
+                /* Set dsm = max(dsm, dsmS) to be used in cvPrepareNextStep */
+                if dsmS > dsm {
+                    dsm = dsmS;
+                }
+            }
+        }
+
+        /* ------ Correct the quadrature sensitivity variables ------ */
+
+        if cv_mem.cv_quadr_sensi {
+            /* Reset local convergence and error test failure counters */
+            ncf = 0;
+            nef = 0;
+            if cv_mem.cv_quadr {
+                nefQ = 0;
+            }
+            if do_sensi_stg {
+                ncfS = 0;
+                nefS = 0;
+            }
+            if do_sensi_stg1 {
+                for is in 0..cv_mem.cv_Ns as usize {
+                    cv_mem.cv_ncfS1[is] = 0;
+                }
+                nefS = 0;
+            }
+
+            /* Note that ftempQ contains yQdot evaluated at the converged y
+             * (stored in cvQuadNls) and can be used in evaluating fQS */
+
+            nflag = cvQuadSensNls(cv_mem);
+            {
+                let mut ncfn_l = cv_mem.cv_ncfn;
+                kflag = cvHandleNFlag(cv_mem, &mut nflag, saved_t, &mut ncf, &mut ncfn_l);
+                cv_mem.cv_ncfn = ncfn_l;
+            }
+
+            if kflag == PREDICT_AGAIN {
+                continue;
+            }
+            if kflag != DO_ERROR_TEST {
+                return kflag;
+            }
+
+            /* Error test on quadrature sensitivities */
+            if cv_mem.cv_errconQS {
+                cv_mem.cv_acnrmQS = cvQuadSensNorm(cv_mem, &cv_mem.cv_acorQS, &cv_mem.cv_ewtQS);
+                let eflag = {
+                    let acnrmQS = cv_mem.cv_acnrmQS;
+                    let mut netfQS_l = cv_mem.cv_netfQS;
+                    let e = cvDoErrorTest(cv_mem, &mut nflag, saved_t, acnrmQS, &mut nefQS, &mut netfQS_l, &mut dsmQS);
+                    cv_mem.cv_netfQS = netfQS_l;
+                    e
+                };
+
+                if eflag == TRY_AGAIN {
+                    continue;
+                }
+                if eflag != CV_SUCCESS {
+                    return eflag;
+                }
+
+                /* Set dsm = max(dsm, dsmQS) to be used in cvPrepareNextStep */
+                if dsmQS > dsm {
+                    dsm = dsmQS;
+                }
+            }
+        }
+
+        /* Error test passed (eflag=CV_SUCCESS), break from loop */
+        break;
+    }
+
+    /* Nonlinear system solve and error test were both successful.
+       Update data, and consider change of step and/or order.       */
+
+    cvCompleteStep(cv_mem);
+
+    cvPrepareNextStep(cv_mem, dsm);
+
+    /* If Stablilty Limit Detection is turned on, call stability limit
+       detection routine for possible order reduction. */
+
+    if cv_mem.cv_sldeton {
+        cvBDFStab(cv_mem);
+    }
+
+    cv_mem.cv_etamax = if cv_mem.cv_nst <= cv_mem.cv_small_nst {
+        cv_mem.cv_eta_max_es
+    } else {
+        cv_mem.cv_eta_max_gs
+    };
+
+    /*  Finally, we rescale the acor array to be the
+        estimated local error vector. */
+
+    let tq2 = cv_mem.cv_tq[2];
+    cv_mem.cv_acor.scale_inplace(tq2);
+
+    if cv_mem.cv_quadr {
+        cv_mem.cv_acorQ.scale_inplace(tq2);
+    }
+
+    if cv_mem.cv_sensi {
+        for is in 0..cv_mem.cv_Ns as usize {
+            cv_mem.cv_acorS[is].scale_inplace(tq2);
+        }
+    }
+
+    if cv_mem.cv_quadr_sensi {
+        for is in 0..cv_mem.cv_Ns as usize {
+            cv_mem.cv_acorQS[is].scale_inplace(tq2);
+        }
+    }
+
+    CV_SUCCESS
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Function called at beginning of step
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvAdjustParams
+ *
+ * This routine is called when a change in step size was decided upon,
+ * and it handles the required adjustments to the history array zn.
+ * If there is to be a change in order, we call cvAdjustOrder and reset
+ * q, L = q+1, and qwait.  Then in any case, we call cvRescale, which
+ * resets h and rescales the Nordsieck array.
+ */
+fn cvAdjustParams(cv_mem: &mut CVodeMem) {
+    if cv_mem.cv_qprime != cv_mem.cv_q {
+        /* History adjustments for an order change were applied when resizing */
+        if !cv_mem.first_step_after_resize {
+            cvAdjustOrder(cv_mem, cv_mem.cv_qprime - cv_mem.cv_q);
+        }
+        cv_mem.cv_q = cv_mem.cv_qprime;
+        cv_mem.cv_L = cv_mem.cv_q + 1;
+        cv_mem.cv_qwait = cv_mem.cv_L;
+    }
+    cvRescale(cv_mem);
+}
+
+/*
+ * cvAdjustOrder
+ *
+ * This routine is a high level routine which handles an order
+ * change by an amount deltaq (= +1 or -1). If a decrease in order
+ * is requested and q==2, then the routine returns immediately.
+ * Otherwise cvAdjustAdams or cvAdjustBDF is called to handle the
+ * order change (depending on the value of lmm).
+ */
+pub(crate) fn cvAdjustOrder(cv_mem: &mut CVodeMem, deltaq: i32) {
+    if cv_mem.cv_q == 2 && deltaq != 1 {
+        return;
+    }
+
+    match cv_mem.cv_lmm {
+        CV_ADAMS => cvAdjustAdams(cv_mem, deltaq),
+        CV_BDF => cvAdjustBDF(cv_mem, deltaq),
+        _ => {}
+    }
+}
+
+/*
+ * cvAdjustAdams
+ *
+ * This routine adjusts the history array on a change of order q by
+ * deltaq, in the case that lmm == CV_ADAMS.
+ */
+fn cvAdjustAdams(cv_mem: &mut CVodeMem, deltaq: i32) {
+    /* On an order increase, set new column of zn to zero and return */
+    if deltaq == 1 {
+        let l = cv_mem.cv_L as usize;
+        N_VConst(ZERO, &mut cv_mem.cv_zn[l]);
+        if cv_mem.cv_quadr {
+            N_VConst(ZERO, &mut cv_mem.cv_znQ[l]);
+        }
+        if cv_mem.cv_sensi {
+            for is in 0..cv_mem.cv_Ns as usize {
+                N_VConst(ZERO, &mut cv_mem.cv_znS[l][is]);
+            }
+        }
+        return;
+    }
+
+    /*
+     * On an order decrease, each zn[j] is adjusted by a multiple of zn[q].
+     * The coeffs. in the adjustment are the coeffs. of the polynomial:
+     *        x
+     * q * INT { u * ( u + xi_1 ) * ... * ( u + xi_{q-2} ) } du
+     *        0
+     * where xi_j = [t_n - t_(n-j)]/h => xi_0 = 0
+     */
+
+    for i in 0..=(cv_mem.cv_qmax as usize) {
+        cv_mem.cv_l[i] = ZERO;
+    }
+    cv_mem.cv_l[1] = ONE;
+    let mut hsum = ZERO;
+    for j in 1..=(cv_mem.cv_q - 2) {
+        hsum += cv_mem.cv_tau[j as usize];
+        let xi = hsum / cv_mem.cv_hscale;
+        let mut i = j + 1;
+        while i >= 1 {
+            cv_mem.cv_l[i as usize] = cv_mem.cv_l[i as usize] * xi + cv_mem.cv_l[(i - 1) as usize];
+            i -= 1;
+        }
+    }
+
+    for j in 1..=(cv_mem.cv_q - 2) {
+        cv_mem.cv_l[(j + 1) as usize] = cv_mem.cv_q as f64 * (cv_mem.cv_l[j as usize] / (j + 1) as f64);
+    }
+
+    /* zn[j] += -l[j]*zn[q] for j = 2..q-1 (N_VScaleAddMulti in C) */
+    if cv_mem.cv_q > 2 {
+        let q = cv_mem.cv_q as usize;
+        {
+            let (front, back) = cv_mem.cv_zn.split_at_mut(q);
+            let znq = &back[0];
+            for j in 2..q {
+                let c = -cv_mem.cv_l[j];
+                for (z, x) in front[j].data.iter_mut().zip(&znq.data) {
+                    *z += c * *x;
+                }
+            }
+        }
+
+        if cv_mem.cv_quadr {
+            let (front, back) = cv_mem.cv_znQ.split_at_mut(q);
+            let znQq = &back[0];
+            for j in 2..q {
+                let c = -cv_mem.cv_l[j];
+                for (z, x) in front[j].data.iter_mut().zip(&znQq.data) {
+                    *z += c * *x;
+                }
+            }
+        }
+
+        if cv_mem.cv_sensi {
+            let ns = cv_mem.cv_Ns as usize;
+            let (front, back) = cv_mem.cv_znS.split_at_mut(q);
+            let znSq = &back[0];
+            for j in 2..q {
+                let c = -cv_mem.cv_l[j];
+                for is in 0..ns {
+                    for (z, x) in front[j][is].data.iter_mut().zip(&znSq[is].data) {
+                        *z += c * *x;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*
+ * cvAdjustBDF
+ *
+ * This is a high level routine which handles adjustments to the
+ * history array on a change of order by deltaq in the case that
+ * lmm == CV_BDF.  cvAdjustBDF calls cvIncreaseBDF if deltaq = +1 and
+ * cvDecreaseBDF if deltaq = -1 to do the actual work.
+ */
+fn cvAdjustBDF(cv_mem: &mut CVodeMem, deltaq: i32) {
+    match deltaq {
+        1 => cvIncreaseBDF(cv_mem),
+        -1 => cvDecreaseBDF(cv_mem),
+        _ => {}
+    }
+}
+
+/*
+ * cvIncreaseBDF
+ *
+ * This routine adjusts the history array on an increase in the
+ * order q in the case that lmm == CV_BDF.
+ * A new column zn[q+1] is set equal to a multiple of the saved
+ * vector (= acor) in zn[indx_acor].  Then each zn[j] is adjusted by
+ * a multiple of zn[q+1].  The coefficients in the adjustment are the
+ * coefficients of the polynomial x*x*(x+xi_1)*...*(x+xi_j),
+ * where xi_j = [t_n - t_(n-j)]/h.
+ */
+fn cvIncreaseBDF(cv_mem: &mut CVodeMem) {
+    for i in 0..=(cv_mem.cv_qmax as usize) {
+        cv_mem.cv_l[i] = ZERO;
+    }
+    cv_mem.cv_l[2] = ONE;
+    let mut alpha1 = ONE;
+    let mut prod = ONE;
+    let mut xiold = ONE;
+    let mut alpha0 = -ONE;
+    let mut hsum = cv_mem.cv_hscale;
+    if cv_mem.cv_q > 1 {
+        for j in 1..cv_mem.cv_q {
+            hsum += cv_mem.cv_tau[(j + 1) as usize];
+            let xi = hsum / cv_mem.cv_hscale;
+            prod *= xi;
+            alpha0 -= ONE / (j + 1) as f64;
+            alpha1 += ONE / xi;
+            let mut i = j + 2;
+            while i >= 2 {
+                cv_mem.cv_l[i as usize] =
+                    cv_mem.cv_l[i as usize] * xiold + cv_mem.cv_l[(i - 1) as usize];
+                i -= 1;
+            }
+            xiold = xi;
+        }
+    }
+    let a1 = (-alpha0 - alpha1) / prod;
+
+    /*
+       zn[indx_acor] contains the value Delta_n = y_n - y_n(0)
+       This value was stored there at the previous successful
+       step (in cvCompleteStep)
+
+       A1 contains dbar = (1/xi* - 1/xi_q)/prod(xi_j)
+    */
+
+    let indx = cv_mem.cv_indx_acor as usize;
+    let l = cv_mem.cv_L as usize;
+    let q = cv_mem.cv_q as usize;
+    let ns = cv_mem.cv_Ns as usize;
+
+    /* zn[L] = A1 * zn[indx_acor] */
+    if indx == l {
+        cv_mem.cv_zn[l].scale_inplace(a1);
+    } else {
+        let (lo, hi) = if indx < l { (indx, l) } else { (l, indx) };
+        let (front, back) = cv_mem.cv_zn.split_at_mut(hi);
+        let (src, dst) = if indx < l {
+            (&front[lo], &mut back[0])
+        } else {
+            let tmp = &mut front[lo];
+            (&back[0], tmp)
+        };
+        N_VScale(a1, src, dst);
+    }
+
+    /* zn[j] += l[j]*zn[L] for j = 2..=q (N_VScaleAddMulti in C) */
+    if cv_mem.cv_q > 1 {
+        let (front, back) = cv_mem.cv_zn.split_at_mut(l);
+        let znl = &back[0];
+        for j in 2..=q {
+            let c = cv_mem.cv_l[j];
+            for (z, x) in front[j].data.iter_mut().zip(&znl.data) {
+                *z += c * *x;
+            }
+        }
+    }
+
+    if cv_mem.cv_quadr {
+        /* znQ[L] = A1 * znQ[indx_acor] */
+        if indx == l {
+            cv_mem.cv_znQ[l].scale_inplace(a1);
+        } else {
+            let (lo, hi) = if indx < l { (indx, l) } else { (l, indx) };
+            let (front, back) = cv_mem.cv_znQ.split_at_mut(hi);
+            let (src, dst) = if indx < l {
+                (&front[lo], &mut back[0])
+            } else {
+                let tmp = &mut front[lo];
+                (&back[0], tmp)
+            };
+            N_VScale(a1, src, dst);
+        }
+
+        /* znQ[j] += l[j]*znQ[L] for j = 2..=q */
+        if cv_mem.cv_q > 1 {
+            let (front, back) = cv_mem.cv_znQ.split_at_mut(l);
+            let znQl = &back[0];
+            for j in 2..=q {
+                let c = cv_mem.cv_l[j];
+                for (z, x) in front[j].data.iter_mut().zip(&znQl.data) {
+                    *z += c * *x;
+                }
+            }
+        }
+    }
+
+    if cv_mem.cv_sensi {
+        /* znS[L][is] = A1 * znS[indx_acor][is] */
+        if indx == l {
+            for is in 0..ns {
+                cv_mem.cv_znS[l][is].scale_inplace(a1);
+            }
+        } else {
+            let (lo, hi) = if indx < l { (indx, l) } else { (l, indx) };
+            let (front, back) = cv_mem.cv_znS.split_at_mut(hi);
+            let (src_row, dst_row) = if indx < l {
+                (&front[lo], &mut back[0])
+            } else {
+                let tmp = &mut front[lo];
+                (&back[0], tmp)
+            };
+            for is in 0..ns {
+                N_VScale(a1, &src_row[is], &mut dst_row[is]);
+            }
+        }
+
+        /* znS[j][is] += l[j]*znS[L][is] for j = 2..=q */
+        if cv_mem.cv_q > 1 {
+            let (front, back) = cv_mem.cv_znS.split_at_mut(l);
+            let znSl = &back[0];
+            for j in 2..=q {
+                let c = cv_mem.cv_l[j];
+                for is in 0..ns {
+                    for (z, x) in front[j][is].data.iter_mut().zip(&znSl[is].data) {
+                        *z += c * *x;
+                    }
+                }
+            }
+        }
+    }
+
+    if cv_mem.cv_quadr_sensi {
+        /* znQS[L][is] = A1 * znQS[indx_acor][is] */
+        if indx == l {
+            for is in 0..ns {
+                cv_mem.cv_znQS[l][is].scale_inplace(a1);
+            }
+        } else {
+            let (lo, hi) = if indx < l { (indx, l) } else { (l, indx) };
+            let (front, back) = cv_mem.cv_znQS.split_at_mut(hi);
+            let (src_row, dst_row) = if indx < l {
+                (&front[lo], &mut back[0])
+            } else {
+                let tmp = &mut front[lo];
+                (&back[0], tmp)
+            };
+            for is in 0..ns {
+                N_VScale(a1, &src_row[is], &mut dst_row[is]);
+            }
+        }
+
+        /* znQS[j][is] += l[j]*znQS[L][is] for j = 2..=q */
+        if cv_mem.cv_q > 1 {
+            let (front, back) = cv_mem.cv_znQS.split_at_mut(l);
+            let znQSl = &back[0];
+            for j in 2..=q {
+                let c = cv_mem.cv_l[j];
+                for is in 0..ns {
+                    for (z, x) in front[j][is].data.iter_mut().zip(&znQSl[is].data) {
+                        *z += c * *x;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*
+ * cvDecreaseBDF
+ *
+ * This routine adjusts the history array on a decrease in the
+ * order q in the case that lmm == CV_BDF.
+ * Each zn[j] is adjusted by a multiple of zn[q].  The coefficients
+ * in the adjustment are the coefficients of the polynomial
+ *   x*x*(x+xi_1)*...*(x+xi_j), where xi_j = [t_n - t_(n-j)]/h.
+ */
+fn cvDecreaseBDF(cv_mem: &mut CVodeMem) {
+    for i in 0..=(cv_mem.cv_qmax as usize) {
+        cv_mem.cv_l[i] = ZERO;
+    }
+    cv_mem.cv_l[2] = ONE;
+    let mut hsum = ZERO;
+    for j in 1..=(cv_mem.cv_q - 2) {
+        hsum += cv_mem.cv_tau[j as usize];
+        let xi = hsum / cv_mem.cv_hscale;
+        let mut i = j + 2;
+        while i >= 2 {
+            cv_mem.cv_l[i as usize] = cv_mem.cv_l[i as usize] * xi + cv_mem.cv_l[(i - 1) as usize];
+            i -= 1;
+        }
+    }
+
+    /* zn[j] += -l[j]*zn[q] for j = 2..q-1 */
+    if cv_mem.cv_q > 2 {
+        let q = cv_mem.cv_q as usize;
+        {
+            let (front, back) = cv_mem.cv_zn.split_at_mut(q);
+            let znq = &back[0];
+            for j in 2..q {
+                let c = -cv_mem.cv_l[j];
+                for (z, x) in front[j].data.iter_mut().zip(&znq.data) {
+                    *z += c * *x;
+                }
+            }
+        }
+
+        if cv_mem.cv_quadr {
+            let (front, back) = cv_mem.cv_znQ.split_at_mut(q);
+            let znQq = &back[0];
+            for j in 2..q {
+                let c = -cv_mem.cv_l[j];
+                for (z, x) in front[j].data.iter_mut().zip(&znQq.data) {
+                    *z += c * *x;
+                }
+            }
+        }
+
+        if cv_mem.cv_sensi {
+            let ns = cv_mem.cv_Ns as usize;
+            let (front, back) = cv_mem.cv_znS.split_at_mut(q);
+            let znSq = &back[0];
+            for j in 2..q {
+                let c = -cv_mem.cv_l[j];
+                for is in 0..ns {
+                    for (z, x) in front[j][is].data.iter_mut().zip(&znSq[is].data) {
+                        *z += c * *x;
+                    }
+                }
+            }
+        }
+
+        if cv_mem.cv_quadr_sensi {
+            let ns = cv_mem.cv_Ns as usize;
+            let (front, back) = cv_mem.cv_znQS.split_at_mut(q);
+            let znQSq = &back[0];
+            for j in 2..q {
+                let c = -cv_mem.cv_l[j];
+                for is in 0..ns {
+                    for (z, x) in front[j][is].data.iter_mut().zip(&znQSq[is].data) {
+                        *z += c * *x;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/*
+ * cvRescale
+ *
+ * This routine rescales the Nordsieck array by multiplying the
+ * jth column zn[j] by eta^j, j = 1, ..., q.  Then the value of
+ * h is rescaled by eta, and hscale is reset to h.
+ */
+pub fn cvRescale(cv_mem: &mut CVodeMem) {
+    /* compute scaling factors sequentially (cvals[j] = eta^j in C)
+       and scale the columns (N_VScaleVectorArray) */
+    let ns = cv_mem.cv_Ns as usize;
+    let mut factor = cv_mem.cv_eta;
+    for j in 1..=(cv_mem.cv_q as usize) {
+        cv_mem.cv_zn[j].scale_inplace(factor);
+
+        if cv_mem.cv_quadr {
+            cv_mem.cv_znQ[j].scale_inplace(factor);
+        }
+
+        if cv_mem.cv_sensi {
+            for is in 0..ns {
+                cv_mem.cv_znS[j][is].scale_inplace(factor);
+            }
+        }
+
+        if cv_mem.cv_quadr_sensi {
+            for is in 0..ns {
+                cv_mem.cv_znQS[j][is].scale_inplace(factor);
+            }
+        }
+
+        factor *= cv_mem.cv_eta;
+    }
+
+    cv_mem.cv_h = cv_mem.cv_hscale * cv_mem.cv_eta;
+    cv_mem.cv_next_h = cv_mem.cv_h;
+    cv_mem.cv_hscale = cv_mem.cv_h;
+    cv_mem.cv_nscon = 0;
+}
+
+/*
+ * cvPredict
+ *
+ * This routine advances tn by the tentative step size h, and computes
+ * the predicted array z_n(0), which is overwritten on zn.  The
+ * prediction of zn is done by repeated additions.
+ * If tstop is enabled, it is possible for tn + h to be past tstop by roundoff,
+ * and in that case, we reset tn (after incrementing by h) to tstop.
+ */
+fn cvPredict(cv_mem: &mut CVodeMem) {
+    cv_mem.cv_tn += cv_mem.cv_h;
+    if cv_mem.cv_tstopset && (cv_mem.cv_tn - cv_mem.cv_tstop) * cv_mem.cv_h > ZERO {
+        cv_mem.cv_tn = cv_mem.cv_tstop;
+    }
+
+    let q = cv_mem.cv_q;
+    for k in 1..=q {
+        let mut j = q;
+        while j >= k {
+            /* zn[j-1] += zn[j] */
+            let (front, back) = cv_mem.cv_zn.split_at_mut(j as usize);
+            let znj = &back[0];
+            for (z, x) in front[(j - 1) as usize].data.iter_mut().zip(&znj.data) {
+                *z += *x;
+            }
+            j -= 1;
+        }
+    }
+
+    if cv_mem.cv_quadr {
+        for k in 1..=q {
+            let mut j = q;
+            while j >= k {
+                /* znQ[j-1] += znQ[j] */
+                let (front, back) = cv_mem.cv_znQ.split_at_mut(j as usize);
+                let znQj = &back[0];
+                for (z, x) in front[(j - 1) as usize].data.iter_mut().zip(&znQj.data) {
+                    *z += *x;
+                }
+                j -= 1;
+            }
+        }
+    }
+
+    if cv_mem.cv_sensi {
+        let ns = cv_mem.cv_Ns as usize;
+        for k in 1..=q {
+            let mut j = q;
+            while j >= k {
+                /* znS[j-1][is] += znS[j][is] */
+                let (front, back) = cv_mem.cv_znS.split_at_mut(j as usize);
+                let znSj = &back[0];
+                for is in 0..ns {
+                    for (z, x) in front[(j - 1) as usize][is].data.iter_mut().zip(&znSj[is].data) {
+                        *z += *x;
+                    }
+                }
+                j -= 1;
+            }
+        }
+    }
+
+    if cv_mem.cv_quadr_sensi {
+        let ns = cv_mem.cv_Ns as usize;
+        for k in 1..=q {
+            let mut j = q;
+            while j >= k {
+                /* znQS[j-1][is] += znQS[j][is] */
+                let (front, back) = cv_mem.cv_znQS.split_at_mut(j as usize);
+                let znQSj = &back[0];
+                for is in 0..ns {
+                    for (z, x) in front[(j - 1) as usize][is].data.iter_mut().zip(&znQSj[is].data) {
+                        *z += *x;
+                    }
+                }
+                j -= 1;
+            }
+        }
+    }
+}
+
+/*
+ * cvSet
+ *
+ * This routine is a high level routine which calls cvSetAdams or
+ * cvSetBDF to set the polynomial l, the test quantity array tq,
+ * and the related variables  rl1, gamma, and gamrat.
+ *
+ * The array tq is loaded with constants used in the control of estimated
+ * local errors and in the nonlinear convergence test.  Specifically, while
+ * running at order q, the components of tq are as follows:
+ *   tq[1] = a coefficient used to get the est. local error at order q-1
+ *   tq[2] = a coefficient used to get the est. local error at order q
+ *   tq[3] = a coefficient used to get the est. local error at order q+1
+ *   tq[4] = constant used in nonlinear iteration convergence test
+ *   tq[5] = coefficient used to get the order q+2 derivative vector used in
+ *           the est. local error at order q+1
+ */
+fn cvSet(cv_mem: &mut CVodeMem) {
+    match cv_mem.cv_lmm {
+        CV_ADAMS => cvSetAdams(cv_mem),
+        CV_BDF => cvSetBDF(cv_mem),
+        _ => {}
+    }
+    cv_mem.cv_rl1 = ONE / cv_mem.cv_l[1];
+    cv_mem.cv_gamma = cv_mem.cv_h * cv_mem.cv_rl1;
+    if cv_mem.cv_nst == 0 {
+        cv_mem.cv_gammap = cv_mem.cv_gamma;
+    }
+    cv_mem.cv_gamrat = if cv_mem.cv_nst > 0 {
+        cv_mem.cv_gamma / cv_mem.cv_gammap
+    } else {
+        ONE /* protect x / x != 1.0 */
+    };
+}
+
+/*
+ * cvSetAdams
+ *
+ * This routine handles the computation of l and tq for the
+ * case lmm == CV_ADAMS.
+ */
+fn cvSetAdams(cv_mem: &mut CVodeMem) {
+    let mut m = [ZERO; L_MAX];
+    let mut big_m = [ZERO; 3];
+
+    if cv_mem.cv_q == 1 {
+        cv_mem.cv_l[0] = ONE;
+        cv_mem.cv_l[1] = ONE;
+        cv_mem.cv_tq[1] = ONE;
+        cv_mem.cv_tq[5] = ONE;
+        cv_mem.cv_tq[2] = HALF;
+        cv_mem.cv_tq[3] = ONE / TWELVE;
+        cv_mem.cv_tq[4] = cv_mem.cv_nlscoef / cv_mem.cv_tq[2]; /* = 0.1 / tq[2] */
+        return;
+    }
+
+    let hsum = cvAdamsStart(cv_mem, &mut m);
+
+    big_m[0] = cvAltSum(cv_mem.cv_q - 1, &m, 1);
+    big_m[1] = cvAltSum(cv_mem.cv_q - 1, &m, 2);
+
+    cvAdamsFinish(cv_mem, &mut m, &mut big_m, hsum);
+}
+
+/*
+ * cvAdamsStart
+ *
+ * This routine generates in m[] the coefficients of the product
+ * polynomial needed for the Adams l and tq coefficients for q > 1.
+ */
+fn cvAdamsStart(cv_mem: &mut CVodeMem, m: &mut [f64]) -> f64 {
+    let mut hsum = cv_mem.cv_h;
+    m[0] = ONE;
+    for i in 1..=(cv_mem.cv_q as usize) {
+        m[i] = ZERO;
+    }
+    for j in 1..cv_mem.cv_q {
+        if j == cv_mem.cv_q - 1 && cv_mem.cv_qwait == 1 {
+            let sum = cvAltSum(cv_mem.cv_q - 2, m, 2);
+            cv_mem.cv_tq[1] = cv_mem.cv_q as f64 * sum / m[(cv_mem.cv_q - 2) as usize];
+        }
+        let xi_inv = cv_mem.cv_h / hsum;
+        let mut i = j;
+        while i >= 1 {
+            m[i as usize] += m[(i - 1) as usize] * xi_inv;
+            i -= 1;
+        }
+        hsum += cv_mem.cv_tau[j as usize];
+        /* The m[i] are coefficients of product(1 to j) (1 + x/xi_i) */
+    }
+    hsum
+}
+
+/*
+ * cvAdamsFinish
+ *
+ * This routine completes the calculation of the Adams l and tq.
+ */
+fn cvAdamsFinish(cv_mem: &mut CVodeMem, m: &mut [f64], big_m: &mut [f64], hsum: f64) {
+    let m0_inv = ONE / big_m[0];
+
+    cv_mem.cv_l[0] = ONE;
+    for i in 1..=(cv_mem.cv_q as usize) {
+        cv_mem.cv_l[i] = m0_inv * (m[i - 1] / i as f64);
+    }
+    let xi = hsum / cv_mem.cv_h;
+    let xi_inv = ONE / xi;
+
+    cv_mem.cv_tq[2] = big_m[1] * m0_inv / xi;
+    cv_mem.cv_tq[5] = xi / cv_mem.cv_l[cv_mem.cv_q as usize];
+
+    if cv_mem.cv_qwait == 1 {
+        let mut i = cv_mem.cv_q;
+        while i >= 1 {
+            m[i as usize] += m[(i - 1) as usize] * xi_inv;
+            i -= 1;
+        }
+        big_m[2] = cvAltSum(cv_mem.cv_q, m, 2);
+        cv_mem.cv_tq[3] = big_m[2] * m0_inv / cv_mem.cv_L as f64;
+    }
+
+    cv_mem.cv_tq[4] = cv_mem.cv_nlscoef / cv_mem.cv_tq[2];
+}
+
+/*
+ * cvAltSum
+ *
+ * cvAltSum returns the value of the alternating sum
+ *   sum (i= 0 ... iend) [ (-1)^i * (a[i] / (i + k)) ].
+ * If iend < 0 then cvAltSum returns 0.
+ * This operation is needed to compute the integral, from -1 to 0,
+ * of a polynomial x^(k-1) M(x) given the coefficients of M(x).
+ */
+fn cvAltSum(iend: i32, a: &[f64], k: i32) -> f64 {
+    if iend < 0 {
+        return ZERO;
+    }
+
+    let mut sum = ZERO;
+    let mut sign = 1i32;
+    for i in 0..=iend {
+        sum += sign as f64 * (a[i as usize] / (i + k) as f64);
+        sign = -sign;
+    }
+    sum
+}
+
+/*
+ * cvSetBDF
+ *
+ * This routine computes the coefficients l and tq in the case
+ * lmm == CV_BDF.  cvSetBDF calls cvSetTqBDF to set the test
+ * quantity array tq.
+ */
+fn cvSetBDF(cv_mem: &mut CVodeMem) {
+    cv_mem.cv_l[0] = ONE;
+    cv_mem.cv_l[1] = ONE;
+    let mut xi_inv = ONE;
+    let mut xistar_inv = ONE;
+    for i in 2..=(cv_mem.cv_q as usize) {
+        cv_mem.cv_l[i] = ZERO;
+    }
+    let mut alpha0 = -ONE;
+    let mut alpha0_hat = -ONE;
+    let mut hsum = cv_mem.cv_h;
+
+    if cv_mem.proj_enabled {
+        for i in 0..=(cv_mem.cv_q as usize) {
+            cv_mem.proj_p[i] = cv_mem.cv_l[i];
+        }
+    }
+
+    if cv_mem.cv_q > 1 {
+        for j in 2..cv_mem.cv_q {
+            hsum += cv_mem.cv_tau[(j - 1) as usize];
+            xi_inv = cv_mem.cv_h / hsum;
+            alpha0 -= ONE / j as f64;
+            let mut i = j;
+            while i >= 1 {
+                cv_mem.cv_l[i as usize] += cv_mem.cv_l[(i - 1) as usize] * xi_inv;
+                i -= 1;
+            }
+            /* The l[i] are coefficients of product(1 to j) (1 + x/xi_i) */
+        }
+
+        /* j = q */
+        alpha0 -= ONE / cv_mem.cv_q as f64;
+        xistar_inv = -cv_mem.cv_l[1] - alpha0;
+        hsum += cv_mem.cv_tau[(cv_mem.cv_q - 1) as usize];
+        xi_inv = cv_mem.cv_h / hsum;
+        alpha0_hat = -cv_mem.cv_l[1] - xi_inv;
+
+        if cv_mem.proj_enabled {
+            let mut i = cv_mem.cv_q;
+            while i >= 1 {
+                cv_mem.proj_p[i as usize] =
+                    cv_mem.cv_l[i as usize] + cv_mem.proj_p[(i - 1) as usize] * xi_inv;
+                i -= 1;
+            }
+        }
+
+        let mut i = cv_mem.cv_q;
+        while i >= 1 {
+            cv_mem.cv_l[i as usize] += cv_mem.cv_l[(i - 1) as usize] * xistar_inv;
+            i -= 1;
+        }
+    }
+
+    cvSetTqBDF(cv_mem, hsum, alpha0, alpha0_hat, xi_inv, xistar_inv);
+}
+
+/*
+ * cvSetTqBDF
+ *
+ * This routine sets the test quantity array tq in the case
+ * lmm == CV_BDF.
+ */
+fn cvSetTqBDF(
+    cv_mem: &mut CVodeMem,
+    mut hsum: f64,
+    alpha0: f64,
+    alpha0_hat: f64,
+    mut xi_inv: f64,
+    xistar_inv: f64,
+) {
+    let a1 = ONE - alpha0_hat + alpha0;
+    let a2 = ONE + cv_mem.cv_q as f64 * a1;
+    cv_mem.cv_tq[2] = SUNRabs(a1 / (alpha0 * a2));
+    cv_mem.cv_tq[5] = SUNRabs(a2 * xistar_inv / (cv_mem.cv_l[cv_mem.cv_q as usize] * xi_inv));
+    if cv_mem.cv_qwait == 1 {
+        if cv_mem.cv_q > 1 {
+            let c = xistar_inv / cv_mem.cv_l[cv_mem.cv_q as usize];
+            let a3 = alpha0 + ONE / cv_mem.cv_q as f64;
+            let a4 = alpha0_hat + xi_inv;
+            let cpinv = (ONE - a4 + a3) / a3;
+            cv_mem.cv_tq[1] = SUNRabs(c * cpinv);
+        } else {
+            cv_mem.cv_tq[1] = ONE;
+        }
+        hsum += cv_mem.cv_tau[cv_mem.cv_q as usize];
+        xi_inv = cv_mem.cv_h / hsum;
+        let a5 = alpha0 - ONE / (cv_mem.cv_q + 1) as f64;
+        let a6 = alpha0_hat - xi_inv;
+        let cppinv = (ONE - a6 + a5) / a2;
+        cv_mem.cv_tq[3] = SUNRabs(cppinv / (xi_inv * (cv_mem.cv_q + 2) as f64 * a5));
+    }
+    cv_mem.cv_tq[4] = cv_mem.cv_nlscoef / cv_mem.cv_tq[2];
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Nonlinear solver functions
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvNls
+ *
+ * This routine attempts to solve the nonlinear system associated
+ * with a single implicit step of the linear multistep method.
+ */
+fn cvNls(cv_mem: &mut CVodeMem, nflag: i32) -> i32 {
+    let call_setup;
+
+    /* Are we computing sensitivities with the CV_SIMULTANEOUS approach? */
+    let do_sensi_sim = cv_mem.cv_sensi && cv_mem.cv_ism == CV_SIMULTANEOUS;
+
+    /* Decide whether or not to call setup routine (if one exists) and */
+    /* set flag convfail (input to lsetup for its evaluation decision) */
+    if crate::cvodes_nls::cv_has_lsetup(cv_mem) {
+        cv_mem.convfail = if nflag == FIRST_CALL || nflag == PREV_ERR_FAIL {
+            CV_NO_FAILURES
+        } else {
+            CV_FAIL_OTHER
+        };
+
+        let mut cs = nflag == PREV_CONV_FAIL
+            || nflag == PREV_ERR_FAIL
+            || cv_mem.cv_nst == 0
+            || cv_mem.first_step_after_resize
+            || cv_mem.cv_nst >= cv_mem.cv_nstlp + cv_mem.cv_msbp
+            || SUNRabs(cv_mem.cv_gamrat - ONE) > cv_mem.cv_dgmax_lsetup;
+
+        /* Decide whether to force a call to setup */
+        if cv_mem.cv_forceSetup {
+            cs = SUNTRUE;
+            cv_mem.convfail = CV_FAIL_OTHER;
+        }
+
+        call_setup = cs;
+    } else {
+        cv_mem.cv_crate = ONE;
+        cv_mem.cv_crateS = ONE; /* if NO lsetup all conv. rates are set to ONE */
+        call_setup = SUNFALSE;
+    }
+
+    /* initial guess for the correction to the predictor
+       (for the simultaneous corrector, ycorSim = [acor, acorS]) */
+    if do_sensi_sim {
+        N_VConst(ZERO, &mut cv_mem.cv_acor);
+        for is in 0..cv_mem.cv_Ns as usize {
+            N_VConst(ZERO, &mut cv_mem.cv_acorS[is]);
+        }
+    } else {
+        N_VConst(ZERO, &mut cv_mem.cv_acor);
+    }
+
+    /* (Newton and fixed-point solvers have no setup operation) */
+
+    /* solve the nonlinear system */
+    let tol = cv_mem.cv_tq[4];
+    let flag;
+    if do_sensi_sim {
+        let mut nls = cv_mem
+            .NLSsim
+            .take()
+            .expect("simultaneous-corrector nonlinear solver attached");
+        flag = crate::cvodes_nls_sim::cvNlsSolveSensSim(cv_mem, &mut nls, tol, call_setup);
+
+        /* increment counters */
+        cv_mem.cv_nni += nls.get_num_iters();
+        cv_mem.cv_nnf += nls.get_num_conv_fails();
+        cv_mem.NLSsim = Some(nls);
+    } else {
+        let mut nls = cv_mem.NLS.take().expect("nonlinear solver attached");
+        flag = crate::cvodes_nls::cvNlsSolve(cv_mem, &mut nls, tol, call_setup);
+
+        /* increment counters */
+        cv_mem.cv_nni += nls.get_num_iters();
+        cv_mem.cv_nnf += nls.get_num_conv_fails();
+        cv_mem.NLS = Some(nls);
+    }
+
+    /* if the solve failed return */
+    if flag != 0 {
+        return flag;
+    }
+
+    /* solve successful */
+
+    /* update the state based on the final correction from the nonlinear solver */
+    {
+        let CVodeMem { cv_zn, cv_acor, cv_y, .. } = cv_mem;
+        N_VLinearSum(ONE, &cv_zn[0], ONE, cv_acor, cv_y);
+    }
+
+    /* update the sensitivities based on the final correction from the nonlinear solver */
+    if do_sensi_sim {
+        let ns = cv_mem.cv_Ns as usize;
+        let CVodeMem { cv_znS, cv_acorS, cv_yS, .. } = cv_mem;
+        for is in 0..ns {
+            N_VLinearSum(ONE, &cv_znS[0][is], ONE, &cv_acorS[is], &mut cv_yS[is]);
+        }
+    }
+
+    /* compute acnrm if is was not already done by the nonlinear solver */
+    if !cv_mem.cv_acnrmcur {
+        if do_sensi_sim && cv_mem.cv_errconS {
+            /* N_VWrmsNorm(ycorSim, ewtSim): the senswrapper WRMS norm is the
+               max over the sub-vector norms */
+            let del = N_VWrmsNorm(&cv_mem.cv_acor, &cv_mem.cv_ewt);
+            cv_mem.cv_acnrm = cvSensUpdateNorm(cv_mem, del, &cv_mem.cv_acorS, &cv_mem.cv_ewtS);
+        } else {
+            cv_mem.cv_acnrm = N_VWrmsNorm(&cv_mem.cv_acor, &cv_mem.cv_ewt);
+        }
+    }
+
+    /* update Jacobian status */
+    cv_mem.cv_jcur = SUNFALSE;
+
+    flag
+}
+
+/*
+ * cvCheckConstraints
+ *
+ * This routine determines if the constraints of the problem
+ * are satisfied by the proposed step
+ *
+ * Possible return values are:
+ *
+ *   CV_SUCCESS     ---> allows stepping forward
+ *
+ *   PREDICT_AGAIN  ---> values failed to satisfy constraints
+ *
+ *   CV_CONSTR_FAIL ---> values failed to satisfy constraints with hmin
+ */
+fn cvCheckConstraints(
+    cv_mem: &mut CVodeMem,
+    nflag_ptr: &mut i32,
+    saved_t: f64,
+    step_constraint_fails: &mut i32,
+) -> i32 {
+    /* mm = cv_ftemp (mask), tmp = cv_tempv (workspace) */
+
+    /* Get mask vector mm, 1 where constraints failed and 0 otherwise */
+    let constraints_passed = {
+        let (c, y, mm) = (&cv_mem.cv_constraints, &cv_mem.cv_y, &mut cv_mem.cv_ftemp);
+        N_VConstrMask(c, y, mm)
+    };
+    if constraints_passed {
+        return CV_SUCCESS;
+    }
+
+    /* Constraints not met */
+
+    /* Compute correction v such that y - v will satisfy the constraints */
+    {
+        let CVodeMem {
+            cv_constraints,
+            cv_ewt,
+            cv_y,
+            cv_tempv: tmp,
+            cv_vtemp1,
+            ..
+        } = cv_mem;
+        N_VCompare(ONEPT5, cv_constraints, tmp);
+        tmp.prod_with(cv_constraints); /* tmp = tmp * constraints */
+        tmp.div_with(cv_ewt); /* tmp = tmp / ewt */
+        N_VScale(-PT1, tmp, cv_vtemp1); /* vtemp1 = -0.1*tmp (saved adjustment) */
+        /* tmp = y - 0.1*tmp */
+        tmp.linear_sum_with(-PT1, ONE, cv_y);
+        /* tmp = tmp * mm */
+        tmp.prod_with(&cv_mem.cv_ftemp);
+    }
+
+    let vnorm = N_VWrmsNorm(&cv_mem.cv_tempv, &cv_mem.cv_ewt); /* ||v|| */
+
+    /* If the correction is small in norm, correct and accept this step */
+    if vnorm <= cv_mem.cv_tq[4] {
+        /* Update constraint correction count */
+        cv_mem.constraint_corrections += 1;
+
+        /* Split the correction update acor = acor - v into three steps */
+        {
+            let CVodeMem {
+                cv_ftemp: mm,
+                cv_tempv: tmp,
+                cv_acor,
+                cv_zn,
+                cv_vtemp1,
+                ..
+            } = cv_mem;
+
+            /* Zero out the correction where any constraint failed */
+            N_VProd(mm, cv_acor, tmp);
+            cv_acor.linear_sum_with(ONE, -ONE, tmp);
+
+            /* Set correction to zero out the predictor where constraints failed */
+            N_VProd(mm, &cv_zn[0], tmp);
+            cv_acor.linear_sum_with(ONE, -ONE, tmp);
+
+            /* Update the correction with the adjustment saved above */
+            cv_vtemp1.prod_with(mm);
+            cv_acor.linear_sum_with(ONE, -ONE, cv_vtemp1);
+        }
+
+        return CV_SUCCESS;
+    }
+
+    /* update failure counts */
+    *step_constraint_fails += 1;
+    cv_mem.constraint_fails += 1;
+
+    /* restore zn */
+    cvRestore(cv_mem, saved_t);
+
+    /* Check for |h| == hmin */
+    if SUNRabs(cv_mem.cv_h) <= cv_mem.cv_hmin * ONEPSM {
+        return CV_CONSTR_FAIL;
+    }
+
+    /* Check for max step attempt failures */
+    if *step_constraint_fails == cv_mem.max_constraint_fails {
+        return CV_CONSTR_FAIL;
+    }
+
+    /* Constraint correction is too large, reduce h by computing eta = h'/h */
+    {
+        let CVodeMem {
+            cv_ftemp: mm,
+            cv_tempv: tmp,
+            cv_zn,
+            cv_y,
+            ..
+        } = cv_mem;
+        N_VLinearSum(ONE, &cv_zn[0], -ONE, cv_y, tmp);
+        tmp.prod_with(mm);
+    }
+
+    /* Reduce step size; return to reattempt the step */
+    cv_mem.cv_eta = PT9 * N_VMinQuotient(&cv_mem.cv_zn[0], &cv_mem.cv_tempv);
+    cv_mem.cv_eta = SUNMAX(cv_mem.cv_eta, PT1);
+    cv_mem.cv_eta = SUNMAX(cv_mem.cv_eta, cv_mem.cv_hmin / SUNRabs(cv_mem.cv_h));
+    cvRescale(cv_mem);
+    *nflag_ptr = PREV_CONV_FAIL;
+
+    PREDICT_AGAIN
+}
+
+/*
+ * cvQuadNls
+ *
+ * This routine solves for the quadrature variables at the new step.
+ * It does not solve a nonlinear system, but rather updates the
+ * quadrature variables. The name for this function is just for
+ * uniformity purposes.
+ *
+ * Possible return values (interpreted by cvHandleNFlag)
+ *
+ *   CV_SUCCESS       -> continue with error test
+ *   CV_QRHSFUNC_FAIL -> halt the integration
+ *   QRHSFUNC_RECVR   -> predict again or stop if too many
+ *
+ */
+fn cvQuadNls(cv_mem: &mut CVodeMem) -> i32 {
+    /* Save quadrature correction in acorQ */
+    let retval = {
+        let fQ = cv_mem.cv_fQ.unwrap();
+        fQ(
+            cv_mem.cv_tn,
+            &cv_mem.cv_y,
+            &mut cv_mem.cv_acorQ,
+            &mut cv_mem.cv_user_data,
+        )
+    };
+    cv_mem.cv_nfQe += 1;
+    if retval < 0 {
+        return CV_QRHSFUNC_FAIL;
+    }
+    if retval > 0 {
+        return QRHSFUNC_RECVR;
+    }
+
+    /* If needed, save the value of yQdot = fQ into ftempQ
+     * for use in evaluating fQS */
+    if cv_mem.cv_quadr_sensi {
+        let CVodeMem { cv_acorQ, cv_ftempQ, .. } = cv_mem;
+        N_VScale(ONE, cv_acorQ, cv_ftempQ);
+    }
+
+    {
+        let h = cv_mem.cv_h;
+        let rl1 = cv_mem.cv_rl1;
+        let CVodeMem { cv_acorQ, cv_znQ, .. } = cv_mem;
+        /* acorQ = h*acorQ - znQ[1]; acorQ *= rl1 */
+        cv_acorQ.linear_sum_with(h, -ONE, &cv_znQ[1]);
+        cv_acorQ.scale_inplace(rl1);
+    }
+
+    /* Apply correction to quadrature variables */
+    {
+        let CVodeMem { cv_znQ, cv_acorQ, cv_yQ, .. } = cv_mem;
+        N_VLinearSum(ONE, &cv_znQ[0], ONE, cv_acorQ, cv_yQ);
+    }
+
+    CV_SUCCESS
+}
+
+/*
+ * cvQuadSensNls
+ *
+ * This routine solves for the quadrature sensitivity variables
+ * at the new step. It does not solve a nonlinear system, but
+ * rather updates the quadrature variables. The name for this
+ * function is just for uniformity purposes.
+ *
+ * Possible return values (interpreted by cvHandleNFlag)
+ *
+ *   CV_SUCCESS        -> continue with error test
+ *   CV_QSRHSFUNC_FAIL -> halt the integration
+ *   QSRHSFUNC_RECVR   -> predict again or stop if too many
+ *
+ */
+fn cvQuadSensNls(cv_mem: &mut CVodeMem) -> i32 {
+    /* Save quadrature sensitivity correction in acorQS */
+    let y = std::mem::take(&mut cv_mem.cv_y);
+    let yS = std::mem::take(&mut cv_mem.cv_yS);
+    let ftempQ = std::mem::take(&mut cv_mem.cv_ftempQ);
+    let mut acorQS = std::mem::take(&mut cv_mem.cv_acorQS);
+    let mut tempv = std::mem::take(&mut cv_mem.cv_tempv);
+    let mut tempvQ = std::mem::take(&mut cv_mem.cv_tempvQ);
+    let tn = cv_mem.cv_tn;
+    let retval = cv_fQS_dispatch(cv_mem, tn, &y, &yS, &ftempQ, &mut acorQS, &mut tempv, &mut tempvQ);
+    cv_mem.cv_y = y;
+    cv_mem.cv_yS = yS;
+    cv_mem.cv_ftempQ = ftempQ;
+    cv_mem.cv_acorQS = acorQS;
+    cv_mem.cv_tempv = tempv;
+    cv_mem.cv_tempvQ = tempvQ;
+    cv_mem.cv_nfQSe += 1;
+    if retval < 0 {
+        return CV_QSRHSFUNC_FAIL;
+    }
+    if retval > 0 {
+        return QSRHSFUNC_RECVR;
+    }
+
+    let h = cv_mem.cv_h;
+    let rl1 = cv_mem.cv_rl1;
+    let ns = cv_mem.cv_Ns as usize;
+    let CVodeMem { cv_acorQS, cv_znQS, cv_yQS, .. } = cv_mem;
+    for is in 0..ns {
+        /* acorQS[is] = h*acorQS[is] - znQS[1][is]; acorQS[is] *= rl1 */
+        cv_acorQS[is].linear_sum_with(h, -ONE, &cv_znQS[1][is]);
+        cv_acorQS[is].scale_inplace(rl1);
+        /* Apply correction to quadrature sensitivity variables */
+        N_VLinearSum(ONE, &cv_znQS[0][is], ONE, &cv_acorQS[is], &mut cv_yQS[is]);
+    }
+
+    CV_SUCCESS
+}
+
+/*
+ * cvStgrNls
+ *
+ * This is a high-level routine that attempts to solve the
+ * sensitivity linear systems using the attached nonlinear solver
+ * once the states y_n were obtained and passed the error test.
+ */
+fn cvStgrNls(cv_mem: &mut CVodeMem) -> i32 {
+    let call_setup = SUNFALSE;
+    if !crate::cvodes_nls::cv_has_lsetup(cv_mem) {
+        cv_mem.cv_crateS = ONE;
+    }
+
+    /* initial guess for the correction to the predictor */
+    for is in 0..cv_mem.cv_Ns as usize {
+        N_VConst(ZERO, &mut cv_mem.cv_acorS[is]);
+    }
+
+    /* set sens solve flag */
+    cv_mem.sens_solve = SUNTRUE;
+
+    /* solve the nonlinear system */
+    let tol = cv_mem.cv_tq[4];
+    let mut nls = cv_mem
+        .NLSstg
+        .take()
+        .expect("staggered-corrector nonlinear solver attached");
+    let flag = crate::cvodes_nls_stg::cvNlsSolveSensStg(cv_mem, &mut nls, tol, call_setup);
+
+    /* increment counters */
+    cv_mem.cv_nniS += nls.get_num_iters();
+    cv_mem.cv_nnfS += nls.get_num_conv_fails();
+    cv_mem.NLSstg = Some(nls);
+
+    /* reset sens solve flag */
+    cv_mem.sens_solve = SUNFALSE;
+
+    /* if the solve failed return */
+    if flag != 0 {
+        return flag;
+    }
+
+    /* solve successful */
+
+    /* update the sensitivities based on the final correction from the nonlinear solver */
+    {
+        let ns = cv_mem.cv_Ns as usize;
+        let CVodeMem { cv_znS, cv_acorS, cv_yS, .. } = cv_mem;
+        for is in 0..ns {
+            N_VLinearSum(ONE, &cv_znS[0][is], ONE, &cv_acorS[is], &mut cv_yS[is]);
+        }
+    }
+
+    /* update Jacobian status */
+    cv_mem.cv_jcur = SUNFALSE;
+
+    flag
+}
+
+/*
+ * cvStgr1Nls
+ *
+ * This is a high-level routine that attempts to solve the i-th
+ * sensitivity linear system using the attached nonlinear solver
+ * once the states y_n were obtained and passed the error test.
+ */
+fn cvStgr1Nls(cv_mem: &mut CVodeMem, is: i32) -> i32 {
+    let isu = is as usize;
+    let call_setup = SUNFALSE;
+    if !crate::cvodes_nls::cv_has_lsetup(cv_mem) {
+        cv_mem.cv_crateS = ONE;
+    }
+
+    /* initial guess for the correction to the predictor */
+    N_VConst(ZERO, &mut cv_mem.cv_acorS[isu]);
+
+    /* set sens solve flag */
+    cv_mem.sens_solve = SUNTRUE;
+
+    /* solve the nonlinear system */
+    let tol = cv_mem.cv_tq[4];
+    let mut nls = cv_mem
+        .NLSstg1
+        .take()
+        .expect("staggered1-corrector nonlinear solver attached");
+    let flag = crate::cvodes_nls_stg1::cvNlsSolveSensStg1(cv_mem, &mut nls, tol, call_setup);
+
+    /* increment counters */
+    cv_mem.cv_nniS1[isu] += nls.get_num_iters();
+    cv_mem.cv_nnfS1[isu] += nls.get_num_conv_fails();
+    cv_mem.NLSstg1 = Some(nls);
+
+    /* reset sens solve flag */
+    cv_mem.sens_solve = SUNFALSE;
+
+    /* if the solve failed return */
+    if flag != 0 {
+        return flag;
+    }
+
+    /* solve successful */
+
+    /* update the sensitivity with the final correction from the nonlinear solver */
+    {
+        let CVodeMem { cv_znS, cv_acorS, cv_yS, .. } = cv_mem;
+        N_VLinearSum(ONE, &cv_znS[0][isu], ONE, &cv_acorS[isu], &mut cv_yS[isu]);
+    }
+
+    /* update Jacobian status */
+    cv_mem.cv_jcur = SUNFALSE;
+
+    flag
+}
+
+/*
+ * cvHandleNFlag
+ *
+ * This routine takes action on the return value nflag = *nflagPtr
+ * returned by cvNls, as follows:
+ *
+ * If cvNls succeeded in solving the nonlinear system, then
+ * cvHandleNFlag returns the constant DO_ERROR_TEST, which tells cvStep
+ * to perform the error test.
+ *
+ * If the nonlinear system was not solved successfully, then ncfn and
+ * ncf = *ncfPtr are incremented and Nordsieck array zn is restored.
+ *
+ * If the solution of the nonlinear system failed due to an
+ * unrecoverable failure by setup, we return the value CV_LSETUP_FAIL.
+ *
+ * If it failed due to an unrecoverable failure in solve, then we return
+ * the value CV_LSOLVE_FAIL.
+ *
+ * If it failed due to an unrecoverable failure in rhs, then we return
+ * the value CV_RHSFUNC_FAIL / CV_QRHSFUNC_FAIL / CV_SRHSFUNC_FAIL /
+ * CV_QSRHSFUNC_FAIL.
+ *
+ * Otherwise, a recoverable failure occurred when solving the nonlinear
+ * system (cvNls returned SUN_NLS_CONV_RECVR, RHSFUNC_RECVR, or
+ * SRHSFUNC_RECVR).
+ *
+ * If ncf is now equal to maxncf or |h| = hmin, we return the value
+ * CV_CONV_FAILURE (if SUN_NLS_CONV_RECVR),
+ * CV_REPTD_RHSFUNC_ERR (if RHSFUNC_RECVR), or
+ * CV_REPTD_SRHSFUNC_ERR (if SRHSFUNC_RECVR).
+ * Otherwise, we set *nflagPtr = PREV_CONV_FAIL and return the value
+ * PREDICT_AGAIN, telling cvStep to reattempt the step.
+ *
+ */
+fn cvHandleNFlag(
+    cv_mem: &mut CVodeMem,
+    nflag_ptr: &mut i32,
+    saved_t: f64,
+    ncf_ptr: &mut i32,
+    ncfn_ptr: &mut i64,
+) -> i32 {
+    let nflag = *nflag_ptr;
+
+    if nflag == CV_SUCCESS {
+        return DO_ERROR_TEST;
+    }
+
+    /* The nonlinear soln. failed; increment ncfn and restore zn */
+    *ncfn_ptr += 1;
+    cvRestore(cv_mem, saved_t);
+
+    /* Return if failed unrecoverably */
+    if nflag < 0 {
+        if nflag == CV_LSETUP_FAIL {
+            return CV_LSETUP_FAIL;
+        } else if nflag == CV_LSOLVE_FAIL {
+            return CV_LSOLVE_FAIL;
+        } else if nflag == CV_RHSFUNC_FAIL {
+            return CV_RHSFUNC_FAIL;
+        } else if nflag == CV_QRHSFUNC_FAIL {
+            return CV_QRHSFUNC_FAIL;
+        } else if nflag == CV_SRHSFUNC_FAIL {
+            return CV_SRHSFUNC_FAIL;
+        } else if nflag == CV_QSRHSFUNC_FAIL {
+            return CV_QSRHSFUNC_FAIL;
+        } else {
+            return CV_NLS_FAIL;
+        }
+    }
+
+    /* At this point, a recoverable error occurred. */
+
+    *ncf_ptr += 1;
+    cv_mem.cv_etamax = ONE;
+
+    /* If we had maxncf failures or |h| = hmin, return failure. */
+
+    if SUNRabs(cv_mem.cv_h) <= cv_mem.cv_hmin * ONEPSM || *ncf_ptr == cv_mem.cv_maxncf {
+        if nflag == SUN_NLS_CONV_RECVR {
+            return CV_CONV_FAILURE;
+        }
+        if nflag == RHSFUNC_RECVR {
+            return CV_REPTD_RHSFUNC_ERR;
+        }
+        if nflag == QRHSFUNC_RECVR {
+            return CV_REPTD_QRHSFUNC_ERR;
+        }
+        if nflag == SRHSFUNC_RECVR {
+            return CV_REPTD_SRHSFUNC_ERR;
+        }
+        if nflag == QSRHSFUNC_RECVR {
+            return CV_REPTD_QSRHSFUNC_ERR;
+        }
+    }
+
+    /* Reduce step size; return to reattempt the step */
+    cv_mem.cv_eta = SUNMAX(cv_mem.cv_eta_cf, cv_mem.cv_hmin / SUNRabs(cv_mem.cv_h));
+    *nflag_ptr = PREV_CONV_FAIL;
+    cvRescale(cv_mem);
+
+    PREDICT_AGAIN
+}
+
+/*
+ * cvRestore
+ *
+ * This routine restores the value of tn to saved_t and undoes the
+ * prediction.  After execution of cvRestore, the Nordsieck array zn has
+ * the same values as before the call to cvPredict.
+ */
+pub fn cvRestore(cv_mem: &mut CVodeMem, saved_t: f64) {
+    cv_mem.cv_tn = saved_t;
+    let q = cv_mem.cv_q;
+    for k in 1..=q {
+        let mut j = q;
+        while j >= k {
+            /* zn[j-1] -= zn[j] */
+            let (front, back) = cv_mem.cv_zn.split_at_mut(j as usize);
+            let znj = &back[0];
+            for (z, x) in front[(j - 1) as usize].data.iter_mut().zip(&znj.data) {
+                *z -= *x;
+            }
+            j -= 1;
+        }
+    }
+
+    if cv_mem.cv_quadr {
+        for k in 1..=q {
+            let mut j = q;
+            while j >= k {
+                /* znQ[j-1] -= znQ[j] */
+                let (front, back) = cv_mem.cv_znQ.split_at_mut(j as usize);
+                let znQj = &back[0];
+                for (z, x) in front[(j - 1) as usize].data.iter_mut().zip(&znQj.data) {
+                    *z -= *x;
+                }
+                j -= 1;
+            }
+        }
+    }
+
+    if cv_mem.cv_sensi {
+        let ns = cv_mem.cv_Ns as usize;
+        for k in 1..=q {
+            let mut j = q;
+            while j >= k {
+                /* znS[j-1][is] -= znS[j][is] */
+                let (front, back) = cv_mem.cv_znS.split_at_mut(j as usize);
+                let znSj = &back[0];
+                for is in 0..ns {
+                    for (z, x) in front[(j - 1) as usize][is].data.iter_mut().zip(&znSj[is].data) {
+                        *z -= *x;
+                    }
+                }
+                j -= 1;
+            }
+        }
+    }
+
+    if cv_mem.cv_quadr_sensi {
+        let ns = cv_mem.cv_Ns as usize;
+        for k in 1..=q {
+            let mut j = q;
+            while j >= k {
+                /* znQS[j-1][is] -= znQS[j][is] */
+                let (front, back) = cv_mem.cv_znQS.split_at_mut(j as usize);
+                let znQSj = &back[0];
+                for is in 0..ns {
+                    for (z, x) in front[(j - 1) as usize][is].data.iter_mut().zip(&znQSj[is].data) {
+                        *z -= *x;
+                    }
+                }
+                j -= 1;
+            }
+        }
+    }
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Error Test
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvDoErrorTest
+ *
+ * This routine performs the local error test, for the state, quadrature,
+ * or sensitivity variables. Its last three arguments change depending
+ * on which variables the error test is to be performed on.
+ *
+ * The weighted local error norm dsm is loaded into *dsmPtr, and
+ * the test dsm ?<= 1 is made.
+ *
+ * If the test passes, cvDoErrorTest returns CV_SUCCESS.
+ *
+ * If the test fails, we undo the step just taken (call cvRestore) and
+ *
+ *   - if maxnef error test failures have occurred or if SUNRabs(h) = hmin,
+ *     we return CV_ERR_FAILURE.
+ *
+ *   - if more than MXNEF1 error test failures have occurred, an order
+ *     reduction is forced. If already at order 1, restart by reloading
+ *     zn from scratch (also znQ and znS if appropriate).
+ *     If f() fails, we return CV_RHSFUNC_FAIL or CV_UNREC_RHSFUNC_ERR;
+ *     if fQ() fails, we return CV_QRHSFUNC_FAIL or CV_UNREC_QRHSFUNC_ERR;
+ *     if cvSensRhsWrapper() fails, we return CV_SRHSFUNC_FAIL or
+ *     CV_UNREC_SRHSFUNC_ERR; (no recovery is possible at this stage).
+ *
+ *   - otherwise, set *nflagPtr to PREV_ERR_FAIL, and return TRY_AGAIN.
+ *
+ */
+fn cvDoErrorTest(
+    cv_mem: &mut CVodeMem,
+    nflag_ptr: &mut i32,
+    saved_t: f64,
+    acor_nrm: f64,
+    nef_ptr: &mut i32,
+    netf_ptr: &mut i64,
+    dsm_ptr: &mut f64,
+) -> i32 {
+    let dsm = acor_nrm * cv_mem.cv_tq[2];
+
+    /* If est. local error norm dsm passes test, return CV_SUCCESS */
+    *dsm_ptr = dsm;
+    if dsm <= ONE {
+        return CV_SUCCESS;
+    }
+
+    /* Test failed; increment counters, set nflag, and restore zn array */
+    *nef_ptr += 1;
+    *netf_ptr += 1;
+    *nflag_ptr = PREV_ERR_FAIL;
+    cvRestore(cv_mem, saved_t);
+
+    /* At maxnef failures or |h| = hmin, return CV_ERR_FAILURE */
+    if SUNRabs(cv_mem.cv_h) <= cv_mem.cv_hmin * ONEPSM || *nef_ptr == cv_mem.cv_maxnef {
+        return CV_ERR_FAILURE;
+    }
+
+    /* Set etamax = 1 to prevent step size increase at end of this step */
+    cv_mem.cv_etamax = ONE;
+
+    /* Set h ratio eta from dsm, rescale, and return for retry of step */
+    if *nef_ptr <= MXNEF1 {
+        cv_mem.cv_eta = ONE / (SUNRpowerR(BIAS2 * dsm, ONE / cv_mem.cv_L as f64) + ADDON);
+        cv_mem.cv_eta = SUNMAX(
+            cv_mem.cv_eta_min_ef,
+            SUNMAX(cv_mem.cv_eta, cv_mem.cv_hmin / SUNRabs(cv_mem.cv_h)),
+        );
+        if *nef_ptr >= cv_mem.cv_small_nef {
+            cv_mem.cv_eta = SUNMIN(cv_mem.cv_eta, cv_mem.cv_eta_max_ef);
+        }
+
+        cvRescale(cv_mem);
+        return TRY_AGAIN;
+    }
+
+    /* After MXNEF1 failures, force an order reduction and retry step */
+    if cv_mem.cv_q > 1 {
+        cv_mem.cv_eta = SUNMAX(cv_mem.cv_eta_min_ef, cv_mem.cv_hmin / SUNRabs(cv_mem.cv_h));
+        cvAdjustOrder(cv_mem, -1);
+        cv_mem.cv_L = cv_mem.cv_q;
+        cv_mem.cv_q -= 1;
+        cv_mem.cv_qwait = cv_mem.cv_L;
+        cvRescale(cv_mem);
+        return TRY_AGAIN;
+    }
+
+    /* If already at order 1, restart: reload zn, znQ, znS, znQS from scratch */
+
+    cv_mem.cv_eta = SUNMAX(cv_mem.cv_eta_min_ef, cv_mem.cv_hmin / SUNRabs(cv_mem.cv_h));
+    cv_mem.cv_h *= cv_mem.cv_eta;
+    cv_mem.cv_next_h = cv_mem.cv_h;
+    cv_mem.cv_hscale = cv_mem.cv_h;
+    cv_mem.cv_qwait = LONG_WAIT;
+    cv_mem.cv_nscon = 0;
+
+    let f = cv_mem.cv_f.unwrap();
+    let retval = f(
+        cv_mem.cv_tn,
+        &cv_mem.cv_zn[0],
+        &mut cv_mem.cv_tempv,
+        &mut cv_mem.cv_user_data,
+    );
+    cv_mem.cv_nfe += 1;
+    if retval < 0 {
+        return CV_RHSFUNC_FAIL;
+    }
+    if retval > 0 {
+        return CV_UNREC_RHSFUNC_ERR;
+    }
+
+    {
+        let h = cv_mem.cv_h;
+        let CVodeMem { cv_tempv, cv_zn, .. } = cv_mem;
+        N_VScale(h, cv_tempv, &mut cv_zn[1]);
+    }
+
+    if cv_mem.cv_quadr {
+        let fQ = cv_mem.cv_fQ.unwrap();
+        let retval = fQ(
+            cv_mem.cv_tn,
+            &cv_mem.cv_zn[0],
+            &mut cv_mem.cv_tempvQ,
+            &mut cv_mem.cv_user_data,
+        );
+        cv_mem.cv_nfQe += 1;
+        if retval < 0 {
+            return CV_QRHSFUNC_FAIL;
+        }
+        if retval > 0 {
+            return CV_UNREC_QRHSFUNC_ERR;
+        }
+
+        let h = cv_mem.cv_h;
+        let CVodeMem { cv_tempvQ, cv_znQ, .. } = cv_mem;
+        N_VScale(h, cv_tempvQ, &mut cv_znQ[1]);
+    }
+
+    if cv_mem.cv_sensi {
+        /* wrk1 = ftemp, wrk2 = ftempS[0] */
+        let tn = cv_mem.cv_tn;
+        let zn0 = std::mem::take(&mut cv_mem.cv_zn[0]);
+        let tempv = std::mem::take(&mut cv_mem.cv_tempv);
+        let znS0 = std::mem::take(&mut cv_mem.cv_znS[0]);
+        let mut tempvS = std::mem::take(&mut cv_mem.cv_tempvS);
+        let mut wrk1 = std::mem::take(&mut cv_mem.cv_ftemp);
+        let mut wrk2 = std::mem::take(&mut cv_mem.cv_ftempS[0]);
+        let retval = cvSensRhsWrapper(cv_mem, tn, &zn0, &tempv, &znS0, &mut tempvS, &mut wrk1, &mut wrk2);
+        cv_mem.cv_zn[0] = zn0;
+        cv_mem.cv_tempv = tempv;
+        cv_mem.cv_znS[0] = znS0;
+        cv_mem.cv_tempvS = tempvS;
+        cv_mem.cv_ftemp = wrk1;
+        cv_mem.cv_ftempS[0] = wrk2;
+        if retval < 0 {
+            return CV_SRHSFUNC_FAIL;
+        }
+        if retval > 0 {
+            return CV_UNREC_SRHSFUNC_ERR;
+        }
+
+        let ns = cv_mem.cv_Ns as usize;
+        let h = cv_mem.cv_h;
+        let CVodeMem { cv_tempvS, cv_znS, .. } = cv_mem;
+        for is in 0..ns {
+            N_VScale(h, &cv_tempvS[is], &mut cv_znS[1][is]);
+        }
+    }
+
+    if cv_mem.cv_quadr_sensi {
+        /* wrk1 = ftemp, wrk2 = ftempQ */
+        let tn = cv_mem.cv_tn;
+        let zn0 = std::mem::take(&mut cv_mem.cv_zn[0]);
+        let znS0 = std::mem::take(&mut cv_mem.cv_znS[0]);
+        let tempvQ = std::mem::take(&mut cv_mem.cv_tempvQ);
+        let mut tempvQS = std::mem::take(&mut cv_mem.cv_tempvQS);
+        let mut wrk1 = std::mem::take(&mut cv_mem.cv_ftemp);
+        let mut wrk2 = std::mem::take(&mut cv_mem.cv_ftempQ);
+        let retval = cv_fQS_dispatch(cv_mem, tn, &zn0, &znS0, &tempvQ, &mut tempvQS, &mut wrk1, &mut wrk2);
+        cv_mem.cv_zn[0] = zn0;
+        cv_mem.cv_znS[0] = znS0;
+        cv_mem.cv_tempvQ = tempvQ;
+        cv_mem.cv_tempvQS = tempvQS;
+        cv_mem.cv_ftemp = wrk1;
+        cv_mem.cv_ftempQ = wrk2;
+        cv_mem.cv_nfQSe += 1;
+        if retval < 0 {
+            return CV_QSRHSFUNC_FAIL;
+        }
+        if retval > 0 {
+            return CV_UNREC_QSRHSFUNC_ERR;
+        }
+
+        let ns = cv_mem.cv_Ns as usize;
+        let h = cv_mem.cv_h;
+        let CVodeMem { cv_tempvQS, cv_znQS, .. } = cv_mem;
+        for is in 0..ns {
+            N_VScale(h, &cv_tempvQS[is], &mut cv_znQS[1][is]);
+        }
+    }
+
+    TRY_AGAIN
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Functions called after a successful step
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvCompleteStep
+ *
+ * This routine performs various update operations when the solution
+ * to the nonlinear system has passed the local error test.
+ * We increment the step counter nst, record the values hu and qu,
+ * update the tau array, and apply the corrections to the zn array.
+ * The tau[i] are the last q values of h, with tau[1] the most recent.
+ * The counter qwait is decremented, and if qwait == 1 (and q < qmax)
+ * we save acor and tq[5] for a possible order increase.
+ */
+fn cvCompleteStep(cv_mem: &mut CVodeMem) {
+    cv_mem.cv_nst += 1;
+    cv_mem.cv_nscon += 1;
+    cv_mem.cv_hu = cv_mem.cv_h;
+    cv_mem.cv_qu = cv_mem.cv_q;
+
+    cv_mem.first_step_after_resize = SUNFALSE;
+
+    let mut i = cv_mem.cv_q;
+    while i >= 2 {
+        cv_mem.cv_tau[i as usize] = cv_mem.cv_tau[(i - 1) as usize];
+        i -= 1;
+    }
+    if cv_mem.cv_q == 1 && cv_mem.cv_nst > 1 {
+        cv_mem.cv_tau[2] = cv_mem.cv_tau[1];
+    }
+    cv_mem.cv_tau[1] = cv_mem.cv_h;
+
+    let q = cv_mem.cv_q as usize;
+    let ns = cv_mem.cv_Ns as usize;
+
+    /* Apply correction to column j of zn: l_j * Delta_n */
+    {
+        let CVodeMem { cv_zn, cv_acor, cv_l, .. } = cv_mem;
+        for j in 0..=q {
+            let c = cv_l[j];
+            for (z, a) in cv_zn[j].data.iter_mut().zip(&cv_acor.data) {
+                *z += c * *a;
+            }
+        }
+    }
+
+    /* Apply the projection correction to column j of zn: p_j * Delta_n */
+    if cv_mem.proj_applied {
+        let CVodeMem { cv_zn, cv_tempv, proj_p, .. } = cv_mem;
+        for j in 0..=q {
+            let c = proj_p[j];
+            for (z, a) in cv_zn[j].data.iter_mut().zip(&cv_tempv.data) {
+                /* tempv = acorP */
+                *z += c * *a;
+            }
+        }
+    }
+
+    if cv_mem.cv_quadr {
+        let CVodeMem { cv_znQ, cv_acorQ, cv_l, .. } = cv_mem;
+        for j in 0..=q {
+            let c = cv_l[j];
+            for (z, a) in cv_znQ[j].data.iter_mut().zip(&cv_acorQ.data) {
+                *z += c * *a;
+            }
+        }
+    }
+
+    if cv_mem.cv_sensi {
+        let CVodeMem { cv_znS, cv_acorS, cv_l, .. } = cv_mem;
+        for j in 0..=q {
+            let c = cv_l[j];
+            for is in 0..ns {
+                for (z, a) in cv_znS[j][is].data.iter_mut().zip(&cv_acorS[is].data) {
+                    *z += c * *a;
+                }
+            }
+        }
+    }
+
+    if cv_mem.cv_quadr_sensi {
+        let CVodeMem { cv_znQS, cv_acorQS, cv_l, .. } = cv_mem;
+        for j in 0..=q {
+            let c = cv_l[j];
+            for is in 0..ns {
+                for (z, a) in cv_znQS[j][is].data.iter_mut().zip(&cv_acorQS[is].data) {
+                    *z += c * *a;
+                }
+            }
+        }
+    }
+
+    /* If necessary, store Delta_n in zn[qmax] to be used in order increase.
+     * This actually will be Delta_{n-1} in the ELTE at q+1 since it happens at
+     * the next to last step of order q before a possible one at order q+1
+     */
+
+    cv_mem.cv_qwait -= 1;
+    if cv_mem.cv_qwait == 1 && cv_mem.cv_q != cv_mem.cv_qmax {
+        let qmax = cv_mem.cv_qmax as usize;
+
+        {
+            let CVodeMem { cv_zn, cv_acor, .. } = cv_mem;
+            cv_zn[qmax].data.copy_from_slice(&cv_acor.data);
+        }
+
+        if cv_mem.cv_quadr {
+            let CVodeMem { cv_znQ, cv_acorQ, .. } = cv_mem;
+            cv_znQ[qmax].data.copy_from_slice(&cv_acorQ.data);
+        }
+
+        if cv_mem.cv_sensi {
+            let CVodeMem { cv_znS, cv_acorS, .. } = cv_mem;
+            for is in 0..ns {
+                cv_znS[qmax][is].data.copy_from_slice(&cv_acorS[is].data);
+            }
+        }
+
+        if cv_mem.cv_quadr_sensi {
+            let CVodeMem { cv_znQS, cv_acorQS, .. } = cv_mem;
+            for is in 0..ns {
+                cv_znQS[qmax][is].data.copy_from_slice(&cv_acorQS[is].data);
+            }
+        }
+
+        cv_mem.cv_saved_tq5 = cv_mem.cv_tq[5];
+        cv_mem.cv_indx_acor = cv_mem.cv_qmax;
+    }
+}
+
+/*
+ * cvPrepareNextStep
+ *
+ * This routine handles the setting of stepsize and order for the
+ * next step -- hprime and qprime.  Along with hprime, it sets the
+ * ratio eta = hprime/h.  It also updates other state variables
+ * related to a change of step size or order.
+ */
+fn cvPrepareNextStep(cv_mem: &mut CVodeMem, dsm: f64) {
+    /* If etamax = 1, defer step size or order changes */
+    if cv_mem.cv_etamax == ONE {
+        cv_mem.cv_qwait = cv_mem.cv_qwait.max(2);
+        cv_mem.cv_qprime = cv_mem.cv_q;
+        cv_mem.cv_hprime = cv_mem.cv_h;
+        cv_mem.cv_eta = ONE;
+    } else {
+        /* etaq is the ratio of new to old h at the current order */
+        cv_mem.cv_etaq = ONE / (SUNRpowerR(BIAS2 * dsm, ONE / cv_mem.cv_L as f64) + ADDON);
+
+        /* If no order change, adjust eta and acor in cvSetEta and return */
+        if cv_mem.cv_qwait != 0 {
+            cv_mem.cv_eta = cv_mem.cv_etaq;
+            cv_mem.cv_qprime = cv_mem.cv_q;
+            cvSetEta(cv_mem);
+        } else {
+            /* If qwait = 0, consider an order change.   etaqm1 and etaqp1 are
+              the ratios of new to old h at orders q-1 and q+1, respectively.
+              cvChooseEta selects the largest; cvSetEta adjusts eta and acor */
+            cv_mem.cv_qwait = 2;
+            cv_mem.cv_etaqm1 = cvComputeEtaqm1(cv_mem);
+            cv_mem.cv_etaqp1 = cvComputeEtaqp1(cv_mem);
+            cvChooseEta(cv_mem);
+            cvSetEta(cv_mem);
+        }
+    }
+}
+
+/*
+ * cvSetEta
+ *
+ * This routine adjusts the value of eta according to the various
+ * heuristic limits and the optional input hmax.
+ */
+fn cvSetEta(cv_mem: &mut CVodeMem) {
+    if cv_mem.cv_eta > cv_mem.cv_eta_min_fx && cv_mem.cv_eta < cv_mem.cv_eta_max_fx {
+        /* Eta is within the fixed step bounds, retain step size */
+        cv_mem.cv_eta = ONE;
+        cv_mem.cv_hprime = cv_mem.cv_h;
+    } else {
+        if cv_mem.cv_eta >= cv_mem.cv_eta_max_fx {
+            /* Increase the step size, limit eta by etamax and hmax */
+            cv_mem.cv_eta = SUNMIN(cv_mem.cv_eta, cv_mem.cv_etamax);
+            cv_mem.cv_eta /= SUNMAX(
+                ONE,
+                SUNRabs(cv_mem.cv_h) * cv_mem.cv_hmax_inv * cv_mem.cv_eta,
+            );
+        } else {
+            /* Reduce the step size, limit eta by etamin and hmin */
+            cv_mem.cv_eta = SUNMAX(cv_mem.cv_eta, cv_mem.cv_eta_min);
+            cv_mem.cv_eta = SUNMAX(cv_mem.cv_eta, cv_mem.cv_hmin / SUNRabs(cv_mem.cv_h));
+        }
+        /* Set hprime */
+        cv_mem.cv_hprime = cv_mem.cv_h * cv_mem.cv_eta;
+        if cv_mem.cv_qprime < cv_mem.cv_q {
+            cv_mem.cv_nscon = 0;
+        }
+    }
+}
+
+/*
+ * cvComputeEtaqm1
+ *
+ * This routine computes and returns the value of etaqm1 for a
+ * possible decrease in order by 1.
+ */
+fn cvComputeEtaqm1(cv_mem: &mut CVodeMem) -> f64 {
+    cv_mem.cv_etaqm1 = ZERO;
+    if cv_mem.cv_q > 1 {
+        let q = cv_mem.cv_q as usize;
+        let mut ddn = N_VWrmsNorm(&cv_mem.cv_zn[q], &cv_mem.cv_ewt);
+
+        if cv_mem.cv_quadr && cv_mem.cv_errconQ {
+            ddn = cvQuadUpdateNorm(cv_mem, ddn, &cv_mem.cv_znQ[q], &cv_mem.cv_ewtQ);
+        }
+
+        if cv_mem.cv_sensi && cv_mem.cv_errconS {
+            ddn = cvSensUpdateNorm(cv_mem, ddn, &cv_mem.cv_znS[q], &cv_mem.cv_ewtS);
+        }
+
+        if cv_mem.cv_quadr_sensi && cv_mem.cv_errconQS {
+            ddn = cvQuadSensUpdateNorm(cv_mem, ddn, &cv_mem.cv_znQS[q], &cv_mem.cv_ewtQS);
+        }
+
+        ddn *= cv_mem.cv_tq[1];
+        cv_mem.cv_etaqm1 = ONE / (SUNRpowerR(BIAS1 * ddn, ONE / cv_mem.cv_q as f64) + ADDON);
+    }
+    cv_mem.cv_etaqm1
+}
+
+/*
+ * cvComputeEtaqp1
+ *
+ * This routine computes and returns the value of etaqp1 for a
+ * possible increase in order by 1.
+ */
+fn cvComputeEtaqp1(cv_mem: &mut CVodeMem) -> f64 {
+    cv_mem.cv_etaqp1 = ZERO;
+    if cv_mem.cv_q != cv_mem.cv_qmax {
+        if cv_mem.cv_saved_tq5 == ZERO {
+            return cv_mem.cv_etaqp1;
+        }
+        let cquot = (cv_mem.cv_tq[5] / cv_mem.cv_saved_tq5)
+            * SUNRpowerI(cv_mem.cv_h / cv_mem.cv_tau[2], cv_mem.cv_L);
+        let qmax = cv_mem.cv_qmax as usize;
+        {
+            let CVodeMem { cv_zn, cv_acor, cv_tempv, .. } = cv_mem;
+            N_VLinearSum(-cquot, &cv_zn[qmax], ONE, cv_acor, cv_tempv);
+        }
+        let mut dup = N_VWrmsNorm(&cv_mem.cv_tempv, &cv_mem.cv_ewt);
+
+        if cv_mem.cv_quadr && cv_mem.cv_errconQ {
+            {
+                let CVodeMem { cv_znQ, cv_acorQ, cv_tempvQ, .. } = cv_mem;
+                N_VLinearSum(-cquot, &cv_znQ[qmax], ONE, cv_acorQ, cv_tempvQ);
+            }
+            dup = cvQuadUpdateNorm(cv_mem, dup, &cv_mem.cv_tempvQ, &cv_mem.cv_ewtQ);
+        }
+
+        if cv_mem.cv_sensi && cv_mem.cv_errconS {
+            {
+                let ns = cv_mem.cv_Ns as usize;
+                let CVodeMem { cv_znS, cv_acorS, cv_tempvS, .. } = cv_mem;
+                for is in 0..ns {
+                    N_VLinearSum(-cquot, &cv_znS[qmax][is], ONE, &cv_acorS[is], &mut cv_tempvS[is]);
+                }
+            }
+            dup = cvSensUpdateNorm(cv_mem, dup, &cv_mem.cv_tempvS, &cv_mem.cv_ewtS);
+        }
+
+        if cv_mem.cv_quadr_sensi && cv_mem.cv_errconQS {
+            {
+                let ns = cv_mem.cv_Ns as usize;
+                let CVodeMem { cv_znQS, cv_acorQS, cv_tempvQS, .. } = cv_mem;
+                for is in 0..ns {
+                    N_VLinearSum(-cquot, &cv_znQS[qmax][is], ONE, &cv_acorQS[is], &mut cv_tempvQS[is]);
+                }
+            }
+            /* (C calls cvSensUpdateNorm here, not cvQuadSensUpdateNorm) */
+            dup = cvSensUpdateNorm(cv_mem, dup, &cv_mem.cv_tempvQS, &cv_mem.cv_ewtQS);
+        }
+
+        dup *= cv_mem.cv_tq[3];
+        cv_mem.cv_etaqp1 = ONE / (SUNRpowerR(BIAS3 * dup, ONE / (cv_mem.cv_L + 1) as f64) + ADDON);
+    }
+    cv_mem.cv_etaqp1
+}
+
+/*
+ * cvChooseEta
+ * Given etaqm1, etaq, etaqp1 (the values of eta for qprime =
+ * q - 1, q, or q + 1, respectively), this routine chooses the
+ * maximum eta value, sets eta to that value, and sets qprime to the
+ * corresponding value of q.  If there is a tie, the preference
+ * order is to (1) keep the same order, then (2) decrease the order,
+ * and finally (3) increase the order.  If the maximum eta value
+ * is within the fixed step bounds, the order is kept unchanged and
+ * eta is set to 1.
+ */
+fn cvChooseEta(cv_mem: &mut CVodeMem) {
+    let etam = SUNMAX(cv_mem.cv_etaqm1, SUNMAX(cv_mem.cv_etaq, cv_mem.cv_etaqp1));
+
+    if etam > cv_mem.cv_eta_min_fx && etam < cv_mem.cv_eta_max_fx {
+        cv_mem.cv_eta = ONE;
+        cv_mem.cv_qprime = cv_mem.cv_q;
+    } else if etam == cv_mem.cv_etaq {
+        cv_mem.cv_eta = cv_mem.cv_etaq;
+        cv_mem.cv_qprime = cv_mem.cv_q;
+    } else if etam == cv_mem.cv_etaqm1 {
+        cv_mem.cv_eta = cv_mem.cv_etaqm1;
+        cv_mem.cv_qprime = cv_mem.cv_q - 1;
+    } else {
+        cv_mem.cv_eta = cv_mem.cv_etaqp1;
+        cv_mem.cv_qprime = cv_mem.cv_q + 1;
+
+        if cv_mem.cv_lmm == CV_BDF {
+            /*
+             * Store Delta_n in zn[qmax] to be used in order increase
+             *
+             * This happens at the last step of order q before an increase
+             * to order q+1, so it represents Delta_n in the ELTE at q+1
+             */
+
+            let qmax = cv_mem.cv_qmax as usize;
+            let ns = cv_mem.cv_Ns as usize;
+
+            {
+                let CVodeMem { cv_zn, cv_acor, .. } = cv_mem;
+                cv_zn[qmax].data.copy_from_slice(&cv_acor.data);
+            }
+
+            if cv_mem.cv_quadr && cv_mem.cv_errconQ {
+                let CVodeMem { cv_znQ, cv_acorQ, .. } = cv_mem;
+                cv_znQ[qmax].data.copy_from_slice(&cv_acorQ.data);
+            }
+
+            if cv_mem.cv_sensi && cv_mem.cv_errconS {
+                let CVodeMem { cv_znS, cv_acorS, .. } = cv_mem;
+                for is in 0..ns {
+                    cv_znS[qmax][is].data.copy_from_slice(&cv_acorS[is].data);
+                }
+            }
+
+            if cv_mem.cv_quadr_sensi && cv_mem.cv_errconQS {
+                let CVodeMem { cv_znQS, cv_acorQS, .. } = cv_mem;
+                for is in 0..ns {
+                    cv_znQS[qmax][is].data.copy_from_slice(&cv_acorQS[is].data);
+                }
+            }
+        }
+    }
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Function to handle failures
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvHandleFailure
+ *
+ * This routine prints error messages for all cases of failure by
+ * cvHin and cvStep.
+ * It returns to CVode the value that CVode is to return to the user.
+ */
+fn cvHandleFailure(cv_mem: &mut CVodeMem, flag: i32) -> i32 {
+    /* Depending on flag, print error message and return error flag */
+    match flag {
+        CV_ERR_FAILURE => cvProcessError(Some(cv_mem), CV_ERR_FAILURE, line!(), "CVode", file!(),
+            &format!("At t = {} and h = {}, the error test failed repeatedly or with |h| = hmin.",
+                     cv_mem.cv_tn, cv_mem.cv_h)),
+        CV_CONV_FAILURE => cvProcessError(Some(cv_mem), CV_CONV_FAILURE, line!(), "CVode", file!(),
+            &format!("At t = {} and h = {}, the corrector convergence test failed repeatedly or with |h| = hmin.",
+                     cv_mem.cv_tn, cv_mem.cv_h)),
+        CV_LSETUP_FAIL => cvProcessError(Some(cv_mem), CV_LSETUP_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the setup routine failed in an unrecoverable manner.", cv_mem.cv_tn)),
+        CV_LSOLVE_FAIL => cvProcessError(Some(cv_mem), CV_LSOLVE_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the solve routine failed in an unrecoverable manner.", cv_mem.cv_tn)),
+        CV_RHSFUNC_FAIL => cvProcessError(Some(cv_mem), CV_RHSFUNC_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the right-hand side routine failed in an unrecoverable manner.", cv_mem.cv_tn)),
+        CV_UNREC_RHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_UNREC_RHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {}, the right-hand side failed in a recoverable manner, but no recovery is possible.",
+                     cv_mem.cv_tn)),
+        CV_REPTD_RHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_REPTD_RHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {} repeated recoverable right-hand side function errors.", cv_mem.cv_tn)),
+        CV_RTFUNC_FAIL => cvProcessError(Some(cv_mem), CV_RTFUNC_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the rootfinding routine failed in an unrecoverable manner.", cv_mem.cv_tn)),
+        CV_QRHSFUNC_FAIL => cvProcessError(Some(cv_mem), CV_QRHSFUNC_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the quadrature right-hand side routine failed in an unrecoverable manner.",
+                     cv_mem.cv_tn)),
+        CV_UNREC_QRHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_UNREC_QRHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {}, the quadrature right-hand side failed in a recoverable manner, but no recovery is possible.",
+                     cv_mem.cv_tn)),
+        CV_REPTD_QRHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_REPTD_QRHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {} repeated recoverable quadrature right-hand side function errors.", cv_mem.cv_tn)),
+        CV_SRHSFUNC_FAIL => cvProcessError(Some(cv_mem), CV_SRHSFUNC_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the sensitivity right-hand side routine failed in an unrecoverable manner.",
+                     cv_mem.cv_tn)),
+        CV_UNREC_SRHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_UNREC_SRHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {}, the sensitivity right-hand side failed in a recoverable manner, but no recovery is possible.",
+                     cv_mem.cv_tn)),
+        CV_REPTD_SRHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_REPTD_SRHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {} repeated recoverable sensitivity right-hand side function errors.", cv_mem.cv_tn)),
+        CV_QSRHSFUNC_FAIL => cvProcessError(Some(cv_mem), CV_QSRHSFUNC_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the quadrature sensitivity right-hand side routine failed in an unrecoverable manner.",
+                     cv_mem.cv_tn)),
+        CV_UNREC_QSRHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_UNREC_QSRHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {}, the quadrature sensitivity right-hand side failed in a recoverable manner, but no recovery is possible.",
+                     cv_mem.cv_tn)),
+        CV_REPTD_QSRHSFUNC_ERR => cvProcessError(Some(cv_mem), CV_REPTD_QSRHSFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {} repeated recoverable quadrature sensitivity right-hand side function errors.",
+                     cv_mem.cv_tn)),
+        CV_TOO_CLOSE => cvProcessError(Some(cv_mem), CV_TOO_CLOSE, line!(), "CVode", file!(), MSGCV_TOO_CLOSE),
+        CV_MEM_NULL => cvProcessError(None, CV_MEM_NULL, line!(), "CVode", file!(), MSGCV_NO_MEM),
+        SUN_ERR_ARG_CORRUPT => {
+            cvProcessError(Some(cv_mem), CV_MEM_NULL, line!(), "CVode", file!(),
+                &format!("At t = {}, the nonlinear solver was passed a NULL input.", cv_mem.cv_tn));
+        }
+        CV_NLS_SETUP_FAIL => cvProcessError(Some(cv_mem), CV_NLS_SETUP_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the nonlinear solver setup failed unrecoverably.", cv_mem.cv_tn)),
+        CV_CONSTR_FAIL => cvProcessError(Some(cv_mem), CV_CONSTR_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, unable to satisfy inequality constraints.", cv_mem.cv_tn)),
+        CV_NLS_FAIL => cvProcessError(Some(cv_mem), CV_NLS_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {}, the nonlinear solver failed in an unrecoverable manner.", cv_mem.cv_tn)),
+        CV_PROJ_MEM_NULL => cvProcessError(Some(cv_mem), CV_PROJ_MEM_NULL, line!(), "CVode", file!(),
+            "proj_mem = NULL illegal."),
+        CV_PROJFUNC_FAIL => cvProcessError(Some(cv_mem), CV_PROJFUNC_FAIL, line!(), "CVode", file!(),
+            &format!("At t = {} the projection function failed with an unrecoverable error.", cv_mem.cv_tn)),
+        CV_REPTD_PROJFUNC_ERR => cvProcessError(Some(cv_mem), CV_REPTD_PROJFUNC_ERR, line!(), "CVode", file!(),
+            &format!("At t = {} the projection function had repeated recoverable errors.", cv_mem.cv_tn)),
+        _ => {
+            /* This return should never happen */
+            cvProcessError(Some(cv_mem), CV_UNRECOGNIZED_ERR, line!(), "CVode", file!(),
+                "CVODES encountered an unrecognized error. Please report this to the SUNDIALS developers at sundials-users@llnl.gov");
+            return CV_UNRECOGNIZED_ERR;
+        }
+    }
+
+    flag
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Functions for BDF Stability Limit Detection
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvBDFStab
+ *
+ * This routine handles the BDF Stability Limit Detection Algorithm
+ * STALD.  It is called if lmm = CV_BDF and the SLDET option is on.
+ * If the order is 3 or more, the required norm data is saved.
+ * If a decision to reduce order has not already been made, and
+ * enough data has been saved, cvSLdet is called.  If it signals
+ * a stability limit violation, the order is reduced, and the step
+ * size is reset accordingly.
+ */
+fn cvBDFStab(cv_mem: &mut CVodeMem) {
+    /* If order is 3 or greater, then save scaled derivative data,
+       push old data down in i, then add current values to top. */
+    if cv_mem.cv_q >= 3 {
+        for k in 1..=3usize {
+            let mut i = 5usize;
+            while i >= 2 {
+                cv_mem.cv_ssdat[i][k] = cv_mem.cv_ssdat[i - 1][k];
+                i -= 1;
+            }
+        }
+        let mut factorial = 1i64;
+        for i in 1..=(cv_mem.cv_q - 1) {
+            factorial *= i as i64;
+        }
+        let sq = factorial as f64 * cv_mem.cv_q as f64 * (cv_mem.cv_q + 1) as f64
+            * cv_mem.cv_acnrm
+            / SUNMAX(cv_mem.cv_tq[5], TINY);
+        let sqm1 = factorial as f64
+            * cv_mem.cv_q as f64
+            * N_VWrmsNorm(&cv_mem.cv_zn[cv_mem.cv_q as usize], &cv_mem.cv_ewt);
+        let sqm2 = factorial as f64
+            * N_VWrmsNorm(&cv_mem.cv_zn[(cv_mem.cv_q - 1) as usize], &cv_mem.cv_ewt);
+        cv_mem.cv_ssdat[1][1] = sqm2 * sqm2;
+        cv_mem.cv_ssdat[1][2] = sqm1 * sqm1;
+        cv_mem.cv_ssdat[1][3] = sq * sq;
+    }
+
+    if cv_mem.cv_qprime >= cv_mem.cv_q {
+        /* If order is 3 or greater, and enough ssdat has been saved,
+           nscon >= q+5, then call stability limit detection routine. */
+        if cv_mem.cv_q >= 3 && cv_mem.cv_nscon >= cv_mem.cv_q + 5 {
+            let ldflag = cvSLdet(cv_mem);
+            if ldflag > 3 {
+                /* A stability limit violation is indicated by a return
+                   flag of 4, 5, or 6. Reduce new order. */
+                cv_mem.cv_qprime = cv_mem.cv_q - 1;
+                cv_mem.cv_eta = cv_mem.cv_etaqm1;
+                cv_mem.cv_eta = SUNMIN(cv_mem.cv_eta, cv_mem.cv_etamax);
+                cv_mem.cv_eta = cv_mem.cv_eta
+                    / SUNMAX(
+                        ONE,
+                        SUNRabs(cv_mem.cv_h) * cv_mem.cv_hmax_inv * cv_mem.cv_eta,
+                    );
+                cv_mem.cv_hprime = cv_mem.cv_h * cv_mem.cv_eta;
+                cv_mem.cv_nor += 1;
+            }
+        }
+    } else {
+        /* Otherwise, let order increase happen, and
+           reset stability limit counter, nscon. */
+        cv_mem.cv_nscon = 0;
+    }
+}
+
+/*
+ * cvSLdet
+ *
+ * This routine detects stability limitation using stored scaled
+ * derivatives data. cvSLdet returns the magnitude of the
+ * dominate characteristic root, rr. The presence of a stability
+ * limit is indicated by rr > "something a little less then 1.0",
+ * and a positive kflag. This routine should only be called if
+ * order is greater than or equal to 3, and data has been collected
+ * for 5 time steps.
+ *
+ * Returned values:
+ *    kflag = 1 -> Found stable characteristic root, normal matrix case
+ *    kflag = 2 -> Found stable characteristic root, quartic solution
+ *    kflag = 3 -> Found stable characteristic root, quartic solution,
+ *                 with Newton correction
+ *    kflag = 4 -> Found stability violation, normal matrix case
+ *    kflag = 5 -> Found stability violation, quartic solution
+ *    kflag = 6 -> Found stability violation, quartic solution,
+ *                 with Newton correction
+ *
+ *    kflag < 0 -> No stability limitation,
+ *                 or could not compute limitation.
+ *
+ *    kflag = -1 -> Min/max ratio of ssdat too small.
+ *    kflag = -2 -> For normal matrix case, vmax > vrrt2*vrrt2
+ *    kflag = -3 -> For normal matrix case, The three ratios
+ *                  are inconsistent.
+ *    kflag = -4 -> Small coefficient prevents elimination of quartics.
+ *    kflag = -5 -> R value from quartics not consistent.
+ *    kflag = -6 -> No corrected root passes test on qk values
+ *    kflag = -7 -> Trouble solving for sigsq.
+ *    kflag = -8 -> Trouble solving for B, or R via B.
+ *    kflag = -9 -> R via sigsq[k] disagrees with R from data.
+ */
+fn cvSLdet(cv_mem: &mut CVodeMem) -> i32 {
+    let mut rat = [[ZERO; 4]; 5];
+    let mut rav = [ZERO; 4];
+    let mut qkr = [ZERO; 4];
+    let mut sigsq = [ZERO; 4];
+    let mut smax = [ZERO; 4];
+    let mut ssmax = [ZERO; 4];
+    let mut drr = [ZERO; 4];
+    let mut rrc = [ZERO; 4];
+    let mut sqmx = [ZERO; 4];
+    let mut qjk = [[ZERO; 4]; 4];
+    let mut vrat = [ZERO; 5];
+    let mut qc = [[ZERO; 4]; 6];
+    let mut qco = [[ZERO; 4]; 6];
+
+    let mut kmin = 0usize;
+    let mut kflag = 0;
+
+    /* The following are cutoffs and tolerances used by this routine */
+    let rrcut = 0.98;
+    let vrrtol = 1.0e-4;
+    let vrrt2 = 5.0e-4;
+    let sqtol = 1.0e-3;
+    let rrtol = 1.0e-2;
+
+    let mut rr; /* (C initializes rr = ZERO; every reachable path assigns it) */
+
+    /*  Index k corresponds to the degree of the interpolating polynomial. */
+    /*      k = 1 -> q-1          */
+    /*      k = 2 -> q            */
+    /*      k = 3 -> q+1          */
+
+    /*  Index i is a backward-in-time index, i = 1 -> current time, */
+    /*      i = 2 -> previous step, etc    */
+
+    /* get maxima, minima, and variances, and form quartic coefficients */
+    for k in 1..=3usize {
+        let mut smink = cv_mem.cv_ssdat[1][k];
+        let mut smaxk = ZERO;
+
+        for i in 1..=5usize {
+            smink = SUNMIN(smink, cv_mem.cv_ssdat[i][k]);
+            smaxk = SUNMAX(smaxk, cv_mem.cv_ssdat[i][k]);
+        }
+
+        if smink < TINY * smaxk {
+            return -1;
+        }
+        smax[k] = smaxk;
+        ssmax[k] = smaxk * smaxk;
+
+        let mut sumrat = ZERO;
+        let mut sumrsq = ZERO;
+        for i in 1..=4usize {
+            rat[i][k] = cv_mem.cv_ssdat[i][k] / cv_mem.cv_ssdat[i + 1][k];
+            sumrat += rat[i][k];
+            sumrsq += rat[i][k] * rat[i][k];
+        }
+        rav[k] = FOURTH * sumrat;
+        vrat[k] = SUNRabs(FOURTH * sumrsq - rav[k] * rav[k]);
+
+        qc[5][k] = cv_mem.cv_ssdat[1][k] * cv_mem.cv_ssdat[3][k]
+            - cv_mem.cv_ssdat[2][k] * cv_mem.cv_ssdat[2][k];
+        qc[4][k] = cv_mem.cv_ssdat[2][k] * cv_mem.cv_ssdat[3][k]
+            - cv_mem.cv_ssdat[1][k] * cv_mem.cv_ssdat[4][k];
+        qc[3][k] = ZERO;
+        qc[2][k] = cv_mem.cv_ssdat[2][k] * cv_mem.cv_ssdat[5][k]
+            - cv_mem.cv_ssdat[3][k] * cv_mem.cv_ssdat[4][k];
+        qc[1][k] = cv_mem.cv_ssdat[4][k] * cv_mem.cv_ssdat[4][k]
+            - cv_mem.cv_ssdat[3][k] * cv_mem.cv_ssdat[5][k];
+
+        for i in 1..=5usize {
+            qco[i][k] = qc[i][k];
+        }
+    } /* End of k loop */
+
+    /* Isolate normal or nearly-normal matrix case. */
+    let vmin = SUNMIN(vrat[1], SUNMIN(vrat[2], vrat[3]));
+    let vmax = SUNMAX(vrat[1], SUNMAX(vrat[2], vrat[3]));
+
+    if vmin < vrrtol * vrrtol {
+        if vmax > vrrt2 * vrrt2 {
+            return -2;
+        }
+
+        rr = (rav[1] + rav[2] + rav[3]) / THREE;
+        let mut drrmax = ZERO;
+        for k in 1..=3usize {
+            let adrr = SUNRabs(rav[k] - rr);
+            drrmax = SUNMAX(drrmax, adrr);
+        }
+        if drrmax > vrrt2 {
+            return -3;
+        }
+
+        kflag = 1;
+        /* can compute characteristic root, drop to next section */
+    } else {
+        /* use the quartics to get rr. */
+        if SUNRabs(qco[1][1]) < TINY * ssmax[1] {
+            return -4;
+        }
+
+        let mut tem = qco[1][2] / qco[1][1];
+        for i in 2..=5usize {
+            qco[i][2] -= tem * qco[i][1];
+        }
+
+        qco[1][2] = ZERO;
+        tem = qco[1][3] / qco[1][1];
+        for i in 2..=5usize {
+            qco[i][3] -= tem * qco[i][1];
+        }
+        qco[1][3] = ZERO;
+
+        if SUNRabs(qco[2][2]) < TINY * ssmax[2] {
+            return -4;
+        }
+
+        tem = qco[2][3] / qco[2][2];
+        for i in 3..=5usize {
+            qco[i][3] -= tem * qco[i][2];
+        }
+
+        if SUNRabs(qco[4][3]) < TINY * ssmax[3] {
+            return -4;
+        }
+
+        rr = -qco[5][3] / qco[4][3];
+
+        if rr < TINY || rr > HUNDRED {
+            return -5;
+        }
+
+        for k in 1..=3usize {
+            qkr[k] = qc[5][k] + rr * (qc[4][k] + rr * rr * (qc[2][k] + rr * qc[1][k]));
+        }
+
+        let mut sqmax = ZERO;
+        for k in 1..=3usize {
+            let saqk = SUNRabs(qkr[k]) / ssmax[k];
+            if saqk > sqmax {
+                sqmax = saqk;
+            }
+        }
+
+        if sqmax < sqtol {
+            kflag = 2;
+            /* can compute characteristic root, drop to "given rr,etc" */
+        } else {
+            /* do Newton corrections to improve rr. */
+            let mut sqmin = ZERO;
+            for _it in 1..=3 {
+                for k in 1..=3usize {
+                    let qp = qc[4][k] + rr * rr * (THREE * qc[2][k] + rr * FOUR * qc[1][k]);
+                    drr[k] = ZERO;
+                    if SUNRabs(qp) > TINY * ssmax[k] {
+                        drr[k] = -qkr[k] / qp;
+                    }
+                    rrc[k] = rr + drr[k];
+                }
+
+                for k in 1..=3usize {
+                    let s = rrc[k];
+                    let mut sqmaxk = ZERO;
+                    for j in 1..=3usize {
+                        qjk[j][k] = qc[5][j] + s * (qc[4][j] + s * s * (qc[2][j] + s * qc[1][j]));
+                        let saqj = SUNRabs(qjk[j][k]) / ssmax[j];
+                        if saqj > sqmaxk {
+                            sqmaxk = saqj;
+                        }
+                    }
+                    sqmx[k] = sqmaxk;
+                }
+
+                sqmin = sqmx[1] + ONE;
+                for k in 1..=3usize {
+                    if sqmx[k] < sqmin {
+                        kmin = k;
+                        sqmin = sqmx[k];
+                    }
+                }
+                rr = rrc[kmin];
+
+                if sqmin < sqtol {
+                    kflag = 3;
+                    /* can compute characteristic root; break out */
+                    break;
+                } else {
+                    for j in 1..=3usize {
+                        qkr[j] = qjk[j][kmin];
+                    }
+                }
+            } /* end of Newton correction loop */
+
+            if sqmin > sqtol {
+                return -6;
+            }
+        } /* end of if (sqmax < sqtol) else */
+    } /* end of if (vmin < vrrtol*vrrtol) else */
+
+    /* given rr, find sigsq[k] and verify rr. */
+    /* All positive kflag drop to this section */
+    for k in 1..=3usize {
+        let rsa = cv_mem.cv_ssdat[1][k];
+        let rsb = cv_mem.cv_ssdat[2][k] * rr;
+        let rsc = cv_mem.cv_ssdat[3][k] * rr * rr;
+        let rsd = cv_mem.cv_ssdat[4][k] * rr * rr * rr;
+        let rd1a = rsa - rsb;
+        let rd1b = rsb - rsc;
+        let rd1c = rsc - rsd;
+        let rd2a = rd1a - rd1b;
+        let rd2b = rd1b - rd1c;
+        let rd3a = rd2a - rd2b;
+
+        if SUNRabs(rd1b) < TINY * smax[k] {
+            return -7;
+        }
+
+        let cest1 = -rd3a / rd1b;
+        if cest1 < TINY || cest1 > FOUR {
+            return -7;
+        }
+        let corr1 = (rd2b / cest1) / (rr * rr);
+        sigsq[k] = cv_mem.cv_ssdat[3][k] + corr1;
+    }
+
+    if sigsq[2] < TINY {
+        return -8;
+    }
+
+    let ratp = sigsq[3] / sigsq[2];
+    let ratm = sigsq[1] / sigsq[2];
+    let qfac1 = FOURTH * (cv_mem.cv_q as f64 * cv_mem.cv_q as f64 - ONE);
+    let qfac2 = TWO / (cv_mem.cv_q as f64 - ONE);
+    let bb = ratp * ratm - ONE - qfac1 * ratp;
+    let tem = ONE - qfac2 * bb;
+
+    if SUNRabs(tem) < TINY {
+        return -8;
+    }
+
+    let rrb = ONE / tem;
+
+    if SUNRabs(rrb - rr) > rrtol {
+        return -9;
+    }
+
+    /* Check to see if rr is above cutoff rrcut */
+    if rr > rrcut {
+        if kflag == 1 {
+            kflag = 4;
+        }
+        if kflag == 2 {
+            kflag = 5;
+        }
+        if kflag == 3 {
+            kflag = 6;
+        }
+    }
+
+    /* All positive kflag returned at this point */
+    kflag
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Functions for rootfinding
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvRcheck1
+ *
+ * This routine completes the initialization of rootfinding memory
+ * information, and checks whether g has a zero both at and very near
+ * the initial point of the IVP.
+ *
+ * This routine returns an int equal to:
+ *  CV_RTFUNC_FAIL < 0 if the g function failed, or
+ *  CV_SUCCESS     = 0 otherwise.
+ */
+fn cvRcheck1(cv_mem: &mut CVodeMem) -> i32 {
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        cv_mem.cv_iroots[i] = 0;
+    }
+    cv_mem.cv_tlo = cv_mem.cv_tn;
+    cv_mem.cv_ttol =
+        (SUNRabs(cv_mem.cv_tn) + SUNRabs(cv_mem.cv_h)) * cv_mem.cv_uround * HUNDRED;
+
+    /* Evaluate g at initial t and check for zero values. */
+    let gfun = cv_mem.cv_gfun.unwrap();
+    let retval = gfun(
+        cv_mem.cv_tlo,
+        &cv_mem.cv_zn[0],
+        &mut cv_mem.cv_glo,
+        &mut cv_mem.cv_user_data,
+    );
+    cv_mem.cv_nge = 1;
+    if retval != 0 {
+        return CV_RTFUNC_FAIL;
+    }
+
+    let mut zroot = SUNFALSE;
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        if SUNRabs(cv_mem.cv_glo[i]) == ZERO {
+            zroot = SUNTRUE;
+            cv_mem.cv_gactive[i] = SUNFALSE;
+        }
+    }
+    if !zroot {
+        return CV_SUCCESS;
+    }
+
+    /* Some g_i is zero at t0; look at g at t0+(small increment). */
+    let hratio = SUNMAX(cv_mem.cv_ttol / SUNRabs(cv_mem.cv_h), PT1);
+    let smallh = hratio * cv_mem.cv_h;
+    let tplus = cv_mem.cv_tlo + smallh;
+    {
+        let CVodeMem { cv_zn, cv_y, .. } = cv_mem;
+        N_VLinearSum(ONE, &cv_zn[0], hratio, &cv_zn[1], cv_y);
+    }
+    let retval = gfun(
+        tplus,
+        &cv_mem.cv_y,
+        &mut cv_mem.cv_ghi,
+        &mut cv_mem.cv_user_data,
+    );
+    cv_mem.cv_nge += 1;
+    if retval != 0 {
+        return CV_RTFUNC_FAIL;
+    }
+
+    /* We check now only the components of g which were exactly 0.0 at t0
+     * to see if we can 'activate' them. */
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        if !cv_mem.cv_gactive[i] && SUNRabs(cv_mem.cv_ghi[i]) != ZERO {
+            cv_mem.cv_gactive[i] = SUNTRUE;
+            cv_mem.cv_glo[i] = cv_mem.cv_ghi[i];
+        }
+    }
+    CV_SUCCESS
+}
+
+/*
+ * cvRcheck2
+ *
+ * This routine checks for exact zeros of g at the last root found,
+ * if the last return was a root.  It then checks for a close pair of
+ * zeros (an error condition), and for a new root at a nearby point.
+ * The array glo = g(tlo) at the left endpoint of the search interval
+ * is adjusted if necessary to assure that all g_i are nonzero
+ * there, before returning to do a root search in the interval.
+ *
+ * On entry, tlo = tretlast is the last value of tret returned by
+ * CVode.  This may be the previous tn, the previous tout value,
+ * or the last root location.
+ *
+ * This routine returns an int equal to:
+ *  CV_RTFUNC_FAIL  < 0 if the g function failed, or
+ *  CLOSERT         = 3 if a close pair of zeros was found, or
+ *  RTFOUND         = 1 if a new zero of g was found near tlo, or
+ *  CV_SUCCESS      = 0 otherwise.
+ */
+fn cvRcheck2(cv_mem: &mut CVodeMem) -> i32 {
+    if cv_mem.cv_irfnd == 0 {
+        return CV_SUCCESS;
+    }
+
+    let _ = cvGetDky_into_y(cv_mem, cv_mem.cv_tlo, 0);
+    let gfun = cv_mem.cv_gfun.unwrap();
+    let retval = gfun(
+        cv_mem.cv_tlo,
+        &cv_mem.cv_y,
+        &mut cv_mem.cv_glo,
+        &mut cv_mem.cv_user_data,
+    );
+    cv_mem.cv_nge += 1;
+    if retval != 0 {
+        return CV_RTFUNC_FAIL;
+    }
+
+    let mut zroot = SUNFALSE;
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        cv_mem.cv_iroots[i] = 0;
+    }
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        if !cv_mem.cv_gactive[i] {
+            continue;
+        }
+        if SUNRabs(cv_mem.cv_glo[i]) == ZERO {
+            zroot = SUNTRUE;
+            cv_mem.cv_iroots[i] = 1;
+        }
+    }
+    if !zroot {
+        return CV_SUCCESS;
+    }
+
+    /* One or more g_i has a zero at tlo. Check g at tlo+smallh. */
+    cv_mem.cv_ttol =
+        (SUNRabs(cv_mem.cv_tn) + SUNRabs(cv_mem.cv_h)) * cv_mem.cv_uround * HUNDRED;
+    let smallh = if cv_mem.cv_h > ZERO {
+        cv_mem.cv_ttol
+    } else {
+        -cv_mem.cv_ttol
+    };
+    let tplus = cv_mem.cv_tlo + smallh;
+    if (tplus - cv_mem.cv_tn) * cv_mem.cv_h >= ZERO {
+        let hratio = smallh / cv_mem.cv_h;
+        let CVodeMem { cv_zn, cv_y, .. } = cv_mem;
+        cv_y.linear_sum_with(ONE, hratio, &cv_zn[1]);
+    } else {
+        let _ = cvGetDky_into_y(cv_mem, tplus, 0);
+    }
+    let retval = gfun(
+        tplus,
+        &cv_mem.cv_y,
+        &mut cv_mem.cv_ghi,
+        &mut cv_mem.cv_user_data,
+    );
+    cv_mem.cv_nge += 1;
+    if retval != 0 {
+        return CV_RTFUNC_FAIL;
+    }
+
+    /* Check for close roots (error return), for a new zero at tlo+smallh,
+       and for a g_i that changed from zero to nonzero. */
+    let mut zroot = SUNFALSE;
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        if !cv_mem.cv_gactive[i] {
+            continue;
+        }
+        if SUNRabs(cv_mem.cv_ghi[i]) == ZERO {
+            if cv_mem.cv_iroots[i] == 1 {
+                return CLOSERT;
+            }
+            zroot = SUNTRUE;
+            cv_mem.cv_iroots[i] = 1;
+        } else if cv_mem.cv_iroots[i] == 1 {
+            cv_mem.cv_glo[i] = cv_mem.cv_ghi[i];
+        }
+    }
+    if zroot {
+        return RTFOUND;
+    }
+    CV_SUCCESS
+}
+
+/*
+ * cvRcheck3
+ *
+ * This routine interfaces to cvRootfind to look for a root of g
+ * between tlo and either tn or tout, whichever comes first.
+ * Only roots beyond tlo in the direction of integration are sought.
+ *
+ * This routine returns an int equal to:
+ *  CV_RTFUNC_FAIL  < 0 if the g function failed, or
+ *  RTFOUND         = 1 if a root of g was found, or
+ *  CV_SUCCESS      = 0 otherwise.
+ */
+fn cvRcheck3(cv_mem: &mut CVodeMem, tout: f64, itask: i32) -> i32 {
+    /* Set thi = tn or tout, whichever comes first; set y = y(thi). */
+    if itask == CV_ONE_STEP {
+        cv_mem.cv_thi = cv_mem.cv_tn;
+        let CVodeMem { cv_zn, cv_y, .. } = cv_mem;
+        cv_y.data.copy_from_slice(&cv_zn[0].data);
+    }
+    if itask == CV_NORMAL {
+        if (tout - cv_mem.cv_tn) * cv_mem.cv_h >= ZERO {
+            cv_mem.cv_thi = cv_mem.cv_tn;
+            let CVodeMem { cv_zn, cv_y, .. } = cv_mem;
+            cv_y.data.copy_from_slice(&cv_zn[0].data);
+        } else {
+            cv_mem.cv_thi = tout;
+            let _ = cvGetDky_into_y(cv_mem, cv_mem.cv_thi, 0);
+        }
+    }
+
+    /* Set ghi = g(thi) and call cvRootfind to search (tlo,thi) for roots. */
+    let gfun = cv_mem.cv_gfun.unwrap();
+    let retval = gfun(
+        cv_mem.cv_thi,
+        &cv_mem.cv_y,
+        &mut cv_mem.cv_ghi,
+        &mut cv_mem.cv_user_data,
+    );
+    cv_mem.cv_nge += 1;
+    if retval != 0 {
+        return CV_RTFUNC_FAIL;
+    }
+
+    cv_mem.cv_ttol =
+        (SUNRabs(cv_mem.cv_tn) + SUNRabs(cv_mem.cv_h)) * cv_mem.cv_uround * HUNDRED;
+    let ier = cvRootfind(cv_mem);
+    if ier == CV_RTFUNC_FAIL {
+        return CV_RTFUNC_FAIL;
+    }
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        if !cv_mem.cv_gactive[i] && cv_mem.cv_grout[i] != ZERO {
+            cv_mem.cv_gactive[i] = SUNTRUE;
+        }
+    }
+    cv_mem.cv_tlo = cv_mem.cv_trout;
+    for i in 0..(cv_mem.cv_nrtfn as usize) {
+        cv_mem.cv_glo[i] = cv_mem.cv_grout[i];
+    }
+
+    /* If no root found, return CV_SUCCESS. */
+    if ier == CV_SUCCESS {
+        return CV_SUCCESS;
+    }
+
+    /* If a root was found, interpolate to get y(trout) and return. */
+    let _ = cvGetDky_into_y(cv_mem, cv_mem.cv_trout, 0);
+    RTFOUND
+}
+
+/*
+ * cvRootfind
+ *
+ * This routine solves for a root of g(t) between tlo and thi, if
+ * one exists.  Only roots of odd multiplicity (i.e. with a change
+ * of sign in one of the g_i), or exact zeros, are found.
+ * Here the sign of tlo - thi is arbitrary, but if multiple roots
+ * are found, the one closest to tlo is returned.
+ *
+ * The method used is the Illinois algorithm, a modified secant method.
+ *
+ * This routine returns an int equal to:
+ *  CV_RTFUNC_FAIL  < 0 if the g function failed, or
+ *  RTFOUND         = 1 if a root of g was found, or
+ *  CV_SUCCESS      = 0 otherwise.
+ */
+fn cvRootfind(cv_mem: &mut CVodeMem) -> i32 {
+    let nrt = cv_mem.cv_nrtfn as usize;
+    let mut imax = 0usize;
+
+    /* First check for change in sign in ghi or for a zero in ghi. */
+    let mut maxfrac = ZERO;
+    let mut zroot = SUNFALSE;
+    let mut sgnchg = SUNFALSE;
+    for i in 0..nrt {
+        if !cv_mem.cv_gactive[i] {
+            continue;
+        }
+        if SUNRabs(cv_mem.cv_ghi[i]) == ZERO {
+            if cv_mem.cv_rootdir[i] as f64 * cv_mem.cv_glo[i] <= ZERO {
+                zroot = SUNTRUE;
+            }
+        } else if SUNRdifferentsign(cv_mem.cv_glo[i], cv_mem.cv_ghi[i])
+            && cv_mem.cv_rootdir[i] as f64 * cv_mem.cv_glo[i] <= ZERO
+        {
+            let gfrac = SUNRabs(cv_mem.cv_ghi[i] / (cv_mem.cv_ghi[i] - cv_mem.cv_glo[i]));
+            if gfrac > maxfrac {
+                sgnchg = SUNTRUE;
+                maxfrac = gfrac;
+                imax = i;
+            }
+        }
+    }
+
+    /* If no sign change was found, reset trout and grout. Then return
+       CV_SUCCESS if no zero was found, or set iroots and return RTFOUND. */
+    if !sgnchg {
+        cv_mem.cv_trout = cv_mem.cv_thi;
+        for i in 0..nrt {
+            cv_mem.cv_grout[i] = cv_mem.cv_ghi[i];
+        }
+        if !zroot {
+            return CV_SUCCESS;
+        }
+        for i in 0..nrt {
+            cv_mem.cv_iroots[i] = 0;
+            if !cv_mem.cv_gactive[i] {
+                continue;
+            }
+            if SUNRabs(cv_mem.cv_ghi[i]) == ZERO
+                && cv_mem.cv_rootdir[i] as f64 * cv_mem.cv_glo[i] <= ZERO
+            {
+                cv_mem.cv_iroots[i] = if cv_mem.cv_glo[i] > 0.0 { -1 } else { 1 };
+            }
+        }
+        return RTFOUND;
+    }
+
+    /* Initialize alph to avoid compiler warning */
+    let mut alph = ONE;
+
+    /* A sign change was found.  Loop to locate nearest root. */
+    let mut side = 0;
+    let mut sideprev = -1;
+    let gfun = cv_mem.cv_gfun.unwrap();
+    loop {
+        /* If interval size is already less than tolerance ttol, break. */
+        if SUNRabs(cv_mem.cv_thi - cv_mem.cv_tlo) <= cv_mem.cv_ttol {
+            break;
+        }
+
+        /* Set weight alph.
+           On the first two passes, set alph = 1.  Thereafter, reset alph
+           according to the side (low vs high) of the subinterval in which
+           the sign change was found in the previous two passes.
+           If the sides were opposite, set alph = 1.
+           If the sides were the same, then double alph (if high side),
+           or halve alph (if low side).
+           The next guess tmid is the secant method value if alph = 1, but
+           is closer to tlo if alph < 1, and closer to thi if alph > 1.    */
+        if sideprev == side {
+            alph = if side == 2 { alph * TWO } else { alph * HALF };
+        } else {
+            alph = ONE;
+        }
+
+        /* Set next root approximation tmid and get g(tmid).
+           If tmid is too close to tlo or thi, adjust it inward,
+           by a fractional distance that is between 0.1 and 0.5.  */
+        let mut tmid = cv_mem.cv_thi
+            - (cv_mem.cv_thi - cv_mem.cv_tlo) * cv_mem.cv_ghi[imax]
+                / (cv_mem.cv_ghi[imax] - alph * cv_mem.cv_glo[imax]);
+        if SUNRabs(tmid - cv_mem.cv_tlo) < HALF * cv_mem.cv_ttol {
+            let fracint = SUNRabs(cv_mem.cv_thi - cv_mem.cv_tlo) / cv_mem.cv_ttol;
+            let fracsub = if fracint > FIVE { PT1 } else { HALF / fracint };
+            tmid = cv_mem.cv_tlo + fracsub * (cv_mem.cv_thi - cv_mem.cv_tlo);
+        }
+        if SUNRabs(cv_mem.cv_thi - tmid) < HALF * cv_mem.cv_ttol {
+            let fracint = SUNRabs(cv_mem.cv_thi - cv_mem.cv_tlo) / cv_mem.cv_ttol;
+            let fracsub = if fracint > FIVE { PT1 } else { HALF / fracint };
+            tmid = cv_mem.cv_thi - fracsub * (cv_mem.cv_thi - cv_mem.cv_tlo);
+        }
+
+        let _ = cvGetDky_into_y(cv_mem, tmid, 0);
+        let retval = gfun(
+            tmid,
+            &cv_mem.cv_y,
+            &mut cv_mem.cv_grout,
+            &mut cv_mem.cv_user_data,
+        );
+        cv_mem.cv_nge += 1;
+        if retval != 0 {
+            return CV_RTFUNC_FAIL;
+        }
+
+        /* Check to see in which subinterval g changes sign, and reset imax.
+           Set side = 1 if sign change is on low side, or 2 if on high side. */
+        maxfrac = ZERO;
+        zroot = SUNFALSE;
+        sgnchg = SUNFALSE;
+        sideprev = side;
+        for i in 0..nrt {
+            if !cv_mem.cv_gactive[i] {
+                continue;
+            }
+            if SUNRabs(cv_mem.cv_grout[i]) == ZERO {
+                if cv_mem.cv_rootdir[i] as f64 * cv_mem.cv_glo[i] <= ZERO {
+                    zroot = SUNTRUE;
+                }
+            } else if SUNRdifferentsign(cv_mem.cv_glo[i], cv_mem.cv_grout[i])
+                && cv_mem.cv_rootdir[i] as f64 * cv_mem.cv_glo[i] <= ZERO
+            {
+                let gfrac = SUNRabs(cv_mem.cv_grout[i] / (cv_mem.cv_grout[i] - cv_mem.cv_glo[i]));
+                if gfrac > maxfrac {
+                    sgnchg = SUNTRUE;
+                    maxfrac = gfrac;
+                    imax = i;
+                }
+            }
+        }
+        if sgnchg {
+            /* Sign change found in (tlo,tmid); replace thi with tmid. */
+            cv_mem.cv_thi = tmid;
+            for i in 0..nrt {
+                cv_mem.cv_ghi[i] = cv_mem.cv_grout[i];
+            }
+            side = 1;
+            /* Stop at root thi if converged; otherwise loop. */
+            if SUNRabs(cv_mem.cv_thi - cv_mem.cv_tlo) <= cv_mem.cv_ttol {
+                break;
+            }
+            continue; /* Return to looping point. */
+        }
+
+        if zroot {
+            /* No sign change in (tlo,tmid), but g = 0 at tmid; return root tmid. */
+            cv_mem.cv_thi = tmid;
+            for i in 0..nrt {
+                cv_mem.cv_ghi[i] = cv_mem.cv_grout[i];
+            }
+            break;
+        }
+
+        /* No sign change in (tlo,tmid), and no zero at tmid.
+           Sign change must be in (tmid,thi).  Replace tlo with tmid. */
+        cv_mem.cv_tlo = tmid;
+        for i in 0..nrt {
+            cv_mem.cv_glo[i] = cv_mem.cv_grout[i];
+        }
+        side = 2;
+        /* Stop at root thi if converged; otherwise loop back. */
+        if SUNRabs(cv_mem.cv_thi - cv_mem.cv_tlo) <= cv_mem.cv_ttol {
+            break;
+        }
+    } /* End of root-search loop */
+
+    /* Reset trout and grout, set iroots, and return RTFOUND. */
+    cv_mem.cv_trout = cv_mem.cv_thi;
+    for i in 0..nrt {
+        cv_mem.cv_grout[i] = cv_mem.cv_ghi[i];
+        cv_mem.cv_iroots[i] = 0;
+        if !cv_mem.cv_gactive[i] {
+            continue;
+        }
+        if SUNRabs(cv_mem.cv_ghi[i]) == ZERO
+            && cv_mem.cv_rootdir[i] as f64 * cv_mem.cv_glo[i] <= ZERO
+        {
+            cv_mem.cv_iroots[i] = if cv_mem.cv_glo[i] > 0.0 { -1 } else { 1 };
+        }
+        if SUNRdifferentsign(cv_mem.cv_glo[i], cv_mem.cv_ghi[i])
+            && cv_mem.cv_rootdir[i] as f64 * cv_mem.cv_glo[i] <= ZERO
+        {
+            cv_mem.cv_iroots[i] = if cv_mem.cv_glo[i] > 0.0 { -1 } else { 1 };
+        }
+    }
+    RTFOUND
+}
+
+/*
+ * =================================================================
+ * Internal EWT function
+ * =================================================================
+ */
+
+/*
+ * cvEwtSet
+ *
+ * This routine is responsible for setting the error weight vector ewt,
+ * according to tol_type, as follows:
+ *
+ * (1) ewt[i] = 1 / (reltol * SUNRabs(ycur[i]) + abstol), i=0,...,neq-1
+ *     if tol_type = CV_SS
+ * (2) ewt[i] = 1 / (reltol * SUNRabs(ycur[i]) + abstol[i]), i=0,...,neq-1
+ *     if tol_type = CV_SV
+ *
+ * cvEwtSet returns 0 if ewt is successfully set as above to a
+ * positive vector and -1 otherwise. In the latter case, ewt is
+ * considered undefined.
+ *
+ * (In C this is cvEwtSet(ycur, weight, data) with data = cv_mem;
+ * the weight vector is detached from CVodeMem by the caller here so
+ * ycur may be borrowed from the same struct. The C version uses
+ * cv_tempv as scratch and inverts it into weight; computing directly
+ * in `weight` performs the identical arithmetic.)
+ */
+pub fn cvEwtSet(cv_mem: &CVodeMem, ycur: &NVector, weight: &mut NVector) -> i32 {
+    match cv_mem.cv_itol {
+        CV_SS => cvEwtSetSS(cv_mem, ycur, weight),
+        CV_SV => cvEwtSetSV(cv_mem, ycur, weight),
+        _ => 0,
+    }
+}
+
+/*
+ * cvEwtSetSS
+ *
+ * This routine sets ewt as described above in the case tol_type = CV_SS.
+ * If the absolute tolerance is zero, it tests for non-positive components
+ * before inverting. cvEwtSetSS returns 0 if ewt is successfully set to a
+ * positive vector and -1 otherwise. In the latter case, ewt is considered
+ * undefined.
+ */
+fn cvEwtSetSS(cv_mem: &CVodeMem, ycur: &NVector, weight: &mut NVector) -> i32 {
+    N_VAbs(ycur, weight);
+    weight.scale_inplace(cv_mem.cv_reltol);
+    weight.add_const_inplace(cv_mem.cv_Sabstol);
+    if cv_mem.cv_atolmin0 && N_VMin(weight) <= ZERO {
+        return -1;
+    }
+    weight.invert_inplace();
+    0
+}
+
+/*
+ * cvEwtSetSV
+ *
+ * This routine sets ewt as described above in the case tol_type = CV_SV.
+ * If any absolute tolerance is zero, it tests for non-positive components
+ * before inverting. cvEwtSetSV returns 0 if ewt is successfully set to a
+ * positive vector and -1 otherwise. In the latter case, ewt is considered
+ * undefined.
+ */
+fn cvEwtSetSV(cv_mem: &CVodeMem, ycur: &NVector, weight: &mut NVector) -> i32 {
+    N_VAbs(ycur, weight);
+    weight.linear_sum_with(cv_mem.cv_reltol, ONE, &cv_mem.cv_Vabstol);
+    if cv_mem.cv_atolmin0 && N_VMin(weight) <= ZERO {
+        return -1;
+    }
+    weight.invert_inplace();
+    0
+}
+
+/*
+ * cvQuadEwtSet
+ *
+ */
+fn cvQuadEwtSet(cv_mem: &CVodeMem, qcur: &NVector, weightQ: &mut NVector) -> i32 {
+    match cv_mem.cv_itolQ {
+        CV_SS => cvQuadEwtSetSS(cv_mem, qcur, weightQ),
+        CV_SV => cvQuadEwtSetSV(cv_mem, qcur, weightQ),
+        _ => 0,
+    }
+}
+
+/*
+ * cvQuadEwtSetSS
+ *
+ * (The C version computes in cv_tempvQ and inverts into weightQ;
+ * computing directly in weightQ performs the identical arithmetic.)
+ */
+fn cvQuadEwtSetSS(cv_mem: &CVodeMem, qcur: &NVector, weightQ: &mut NVector) -> i32 {
+    N_VAbs(qcur, weightQ);
+    weightQ.scale_inplace(cv_mem.cv_reltolQ);
+    weightQ.add_const_inplace(cv_mem.cv_SabstolQ);
+    if cv_mem.cv_atolQmin0 && N_VMin(weightQ) <= ZERO {
+        return -1;
+    }
+    weightQ.invert_inplace();
+    0
+}
+
+/*
+ * cvQuadEwtSetSV
+ *
+ */
+fn cvQuadEwtSetSV(cv_mem: &CVodeMem, qcur: &NVector, weightQ: &mut NVector) -> i32 {
+    N_VAbs(qcur, weightQ);
+    weightQ.linear_sum_with(cv_mem.cv_reltolQ, ONE, &cv_mem.cv_VabstolQ);
+    if cv_mem.cv_atolQmin0 && N_VMin(weightQ) <= ZERO {
+        return -1;
+    }
+    weightQ.invert_inplace();
+    0
+}
+
+/*
+ * cvSensEwtSet
+ *
+ */
+fn cvSensEwtSet(cv_mem: &mut CVodeMem, yScur: &[NVector], weightS: &mut [NVector]) -> i32 {
+    match cv_mem.cv_itolS {
+        CV_EE => cvSensEwtSetEE(cv_mem, yScur, weightS),
+        CV_SS => cvSensEwtSetSS(cv_mem, yScur, weightS),
+        CV_SV => cvSensEwtSetSV(cv_mem, yScur, weightS),
+        _ => 0,
+    }
+}
+
+/*
+ * cvSensEwtSetEE
+ *
+ * In this case, the error weight vector for the i-th sensitivity is set to
+ *
+ * ewtS_i = pbar_i * efun(pbar_i*yS_i)
+ *
+ * In other words, the scaled sensitivity pbar_i * yS_i has the same error
+ * weight vector calculation as the solution vector.
+ *
+ */
+fn cvSensEwtSetEE(cv_mem: &mut CVodeMem, yScur: &[NVector], weightS: &mut [NVector]) -> i32 {
+    /* Use tempvS[0] as temporary storage for the scaled sensitivity pyS */
+    for is in 0..cv_mem.cv_Ns as usize {
+        let pbari = cv_mem.cv_pbar[is];
+        {
+            let CVodeMem { cv_tempvS, .. } = cv_mem;
+            N_VScale(pbari, &yScur[is], &mut cv_tempvS[0]);
+        }
+        let flag = if cv_mem.cv_user_efun {
+            let efun = cv_mem.cv_efun.unwrap();
+            let CVodeMem { cv_tempvS, cv_user_data, .. } = cv_mem;
+            efun(&cv_tempvS[0], &mut weightS[is], cv_user_data)
+        } else {
+            cvEwtSet(cv_mem, &cv_mem.cv_tempvS[0], &mut weightS[is])
+        };
+        if flag != 0 {
+            return -1;
+        }
+        weightS[is].scale_inplace(pbari);
+    }
+    0
+}
+
+/*
+ * cvSensEwtSetSS
+ *
+ */
+fn cvSensEwtSetSS(cv_mem: &mut CVodeMem, yScur: &[NVector], weightS: &mut [NVector]) -> i32 {
+    for is in 0..cv_mem.cv_Ns as usize {
+        N_VAbs(&yScur[is], &mut cv_mem.cv_tempv);
+        let reltolS = cv_mem.cv_reltolS;
+        cv_mem.cv_tempv.scale_inplace(reltolS);
+        let sabstolS = cv_mem.cv_SabstolS[is];
+        cv_mem.cv_tempv.add_const_inplace(sabstolS);
+        if cv_mem.cv_atolSmin0[is] && N_VMin(&cv_mem.cv_tempv) <= ZERO {
+            return -1;
+        }
+        N_VInv(&cv_mem.cv_tempv, &mut weightS[is]);
+    }
+    0
+}
+
+/*
+ * cvSensEwtSetSV
+ *
+ */
+fn cvSensEwtSetSV(cv_mem: &mut CVodeMem, yScur: &[NVector], weightS: &mut [NVector]) -> i32 {
+    for is in 0..cv_mem.cv_Ns as usize {
+        N_VAbs(&yScur[is], &mut cv_mem.cv_tempv);
+        {
+            let reltolS = cv_mem.cv_reltolS;
+            let CVodeMem { cv_tempv, cv_VabstolS, .. } = cv_mem;
+            cv_tempv.linear_sum_with(reltolS, ONE, &cv_VabstolS[is]);
+        }
+        if cv_mem.cv_atolSmin0[is] && N_VMin(&cv_mem.cv_tempv) <= ZERO {
+            return -1;
+        }
+        N_VInv(&cv_mem.cv_tempv, &mut weightS[is]);
+    }
+    0
+}
+
+/*
+ * cvQuadSensEwtSet
+ *
+ */
+fn cvQuadSensEwtSet(cv_mem: &mut CVodeMem, yQScur: &[NVector], weightQS: &mut [NVector]) -> i32 {
+    match cv_mem.cv_itolQS {
+        CV_EE => cvQuadSensEwtSetEE(cv_mem, yQScur, weightQS),
+        CV_SS => cvQuadSensEwtSetSS(cv_mem, yQScur, weightQS),
+        CV_SV => cvQuadSensEwtSetSV(cv_mem, yQScur, weightQS),
+        _ => 0,
+    }
+}
+
+/*
+ * cvQuadSensEwtSetEE
+ *
+ * In this case, the error weight vector for the i-th quadrature sensitivity
+ * is set to
+ *
+ * ewtQS_i = pbar_i * cvQuadEwtSet(pbar_i*yQS_i)
+ *
+ * In other words, the scaled sensitivity pbar_i * yQS_i has the same error
+ * weight vector calculation as the quadrature vector.
+ *
+ */
+fn cvQuadSensEwtSetEE(cv_mem: &mut CVodeMem, yQScur: &[NVector], weightQS: &mut [NVector]) -> i32 {
+    /* Use tempvQS[0] as temporary storage for the scaled sensitivity pyS */
+    for is in 0..cv_mem.cv_Ns as usize {
+        let pbari = cv_mem.cv_pbar[is];
+        {
+            let CVodeMem { cv_tempvQS, .. } = cv_mem;
+            N_VScale(pbari, &yQScur[is], &mut cv_tempvQS[0]);
+        }
+        let flag = cvQuadEwtSet(cv_mem, &cv_mem.cv_tempvQS[0], &mut weightQS[is]);
+        if flag != 0 {
+            return -1;
+        }
+        weightQS[is].scale_inplace(pbari);
+    }
+    0
+}
+
+/*
+ * cvQuadSensEwtSetSS
+ *
+ */
+fn cvQuadSensEwtSetSS(cv_mem: &mut CVodeMem, yQScur: &[NVector], weightQS: &mut [NVector]) -> i32 {
+    for is in 0..cv_mem.cv_Ns as usize {
+        N_VAbs(&yQScur[is], &mut cv_mem.cv_tempvQ);
+        let reltolQS = cv_mem.cv_reltolQS;
+        cv_mem.cv_tempvQ.scale_inplace(reltolQS);
+        let sabstolQS = cv_mem.cv_SabstolQS[is];
+        cv_mem.cv_tempvQ.add_const_inplace(sabstolQS);
+        if cv_mem.cv_atolQSmin0[is] && N_VMin(&cv_mem.cv_tempvQ) <= ZERO {
+            return -1;
+        }
+        N_VInv(&cv_mem.cv_tempvQ, &mut weightQS[is]);
+    }
+    0
+}
+
+/*
+ * cvQuadSensEwtSetSV
+ *
+ */
+fn cvQuadSensEwtSetSV(cv_mem: &mut CVodeMem, yQScur: &[NVector], weightQS: &mut [NVector]) -> i32 {
+    for is in 0..cv_mem.cv_Ns as usize {
+        N_VAbs(&yQScur[is], &mut cv_mem.cv_tempvQ);
+        {
+            let reltolQS = cv_mem.cv_reltolQS;
+            let CVodeMem { cv_tempvQ, cv_VabstolQS, .. } = cv_mem;
+            cv_tempvQ.linear_sum_with(reltolQS, ONE, &cv_VabstolQS[is]);
+        }
+        if cv_mem.cv_atolQSmin0[is] && N_VMin(&cv_mem.cv_tempvQ) <= ZERO {
+            return -1;
+        }
+        N_VInv(&cv_mem.cv_tempvQ, &mut weightQS[is]);
+    }
+    0
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Functions for combined norms
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvQuadUpdateNorm
+ *
+ * Updates the norm old_nrm to account for all quadratures.
+ */
+pub(crate) fn cvQuadUpdateNorm(_cv_mem: &CVodeMem, old_nrm: f64, xQ: &NVector, wQ: &NVector) -> f64 {
+    let qnrm = N_VWrmsNorm(xQ, wQ);
+    if old_nrm > qnrm {
+        old_nrm
+    } else {
+        qnrm
+    }
+}
+
+/*
+ * cvSensNorm
+ *
+ * This routine returns the maximum over the weighted root mean
+ * square norm of xS with weight vectors wS:
+ *
+ *  max { wrms(xS[0],wS[0]) ... wrms(xS[Ns-1],wS[Ns-1]) }
+ *
+ * Called by cvSensUpdateNorm or directly in the CV_STAGGERED approach
+ * during the NLS solution and before the error test.
+ */
+pub(crate) fn cvSensNorm(cv_mem: &CVodeMem, xS: &[NVector], wS: &[NVector]) -> f64 {
+    /* (N_VWrmsNormVectorArray + max reduction, translated per-is) */
+    let mut nrm = N_VWrmsNorm(&xS[0], &wS[0]);
+    for is in 1..cv_mem.cv_Ns as usize {
+        let tmp = N_VWrmsNorm(&xS[is], &wS[is]);
+        if tmp > nrm {
+            nrm = tmp;
+        }
+    }
+    nrm
+}
+
+/*
+ * cvSensUpdateNorm
+ *
+ * Updates the norm old_nrm to account for all sensitivities.
+ */
+pub(crate) fn cvSensUpdateNorm(cv_mem: &CVodeMem, old_nrm: f64, xS: &[NVector], wS: &[NVector]) -> f64 {
+    let snrm = cvSensNorm(cv_mem, xS, wS);
+    if old_nrm > snrm {
+        old_nrm
+    } else {
+        snrm
+    }
+}
+
+/*
+ * cvQuadSensNorm
+ *
+ * This routine returns the maximum over the weighted root mean
+ * square norm of xQS with weight vectors wQS:
+ *
+ *  max { wrms(xQS[0],wS[0]) ... wrms(xQS[Ns-1],wS[Ns-1]) }
+ *
+ * Called by cvQuadSensUpdateNorm.
+ */
+fn cvQuadSensNorm(cv_mem: &CVodeMem, xQS: &[NVector], wQS: &[NVector]) -> f64 {
+    /* (N_VWrmsNormVectorArray + max reduction, translated per-is) */
+    let mut nrm = N_VWrmsNorm(&xQS[0], &wQS[0]);
+    for is in 1..cv_mem.cv_Ns as usize {
+        let tmp = N_VWrmsNorm(&xQS[is], &wQS[is]);
+        if tmp > nrm {
+            nrm = tmp;
+        }
+    }
+    nrm
+}
+
+/*
+ * cvQuadSensUpdateNorm
+ *
+ * Updates the norm old_nrm to account for all quadrature sensitivities.
+ */
+pub(crate) fn cvQuadSensUpdateNorm(cv_mem: &CVodeMem, old_nrm: f64, xQS: &[NVector], wQS: &[NVector]) -> f64 {
+    let snrm = cvQuadSensNorm(cv_mem, xQS, wQS);
+    if old_nrm > snrm {
+        old_nrm
+    } else {
+        snrm
+    }
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Wrappers for sensitivity RHS
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvSensRhsWrapper
+ *
+ * CVSensRhs is a high level routine that returns right hand side
+ * of sensitivity equations. Depending on the 'ifS' flag, it either
+ * calls directly the fS routine (ifS=CV_ALLSENS) or (if ifS=CV_ONESENS)
+ * calls the fS1 routine in a loop over all sensitivities.
+ *
+ * CVSensRhs is called:
+ *  (*) by CVode at the first step
+ *  (*) by cvYddNorm if errcon=SUNTRUE
+ *  (*) by the nonlinear solver if ism=CV_SIMULTANEOUS
+ *  (*) by cvDoErrorTest when restarting from scratch
+ *  (*) in the corrector loop if ism=CV_STAGGERED
+ *  (*) by cvStgrDoErrorTest when restarting from scratch
+ *
+ * The return value is that of the sensitivity RHS function fS,
+ *
+ */
+pub(crate) fn cvSensRhsWrapper(
+    cv_mem: &mut CVodeMem,
+    time: f64,
+    ycur: &NVector,
+    fcur: &NVector,
+    yScur: &[NVector],
+    fScur: &mut [NVector],
+    temp1: &mut NVector,
+    temp2: &mut NVector,
+) -> i32 {
+    let ns = cv_mem.cv_Ns;
+
+    if cv_mem.cv_ifS == CV_ALLSENS {
+        let retval = if cv_mem.cv_fSDQ {
+            /* C: cv_fS = cvSensRhsInternalDQ with fS_data = cvode_mem */
+            cvSensRhsInternalDQ(cv_mem, ns, time, ycur, fcur, yScur, fScur, temp1, temp2)
+        } else {
+            let fS = cv_mem.cv_fS.unwrap();
+            fS(ns, time, ycur, fcur, yScur, fScur, &mut cv_mem.cv_user_data, temp1, temp2)
+        };
+        cv_mem.cv_nfSe += 1;
+        retval
+    } else {
+        let mut retval = 0;
+        for is in 0..ns as usize {
+            retval = if cv_mem.cv_fSDQ {
+                /* C: cv_fS1 = cvSensRhs1InternalDQ with fS_data = cvode_mem */
+                cvSensRhs1InternalDQ(cv_mem, ns, time, ycur, fcur, is as i32, &yScur[is], &mut fScur[is], temp1, temp2)
+            } else {
+                let fS1 = cv_mem.cv_fS1.unwrap();
+                fS1(ns, time, ycur, fcur, is as i32, &yScur[is], &mut fScur[is], &mut cv_mem.cv_user_data, temp1, temp2)
+            };
+            cv_mem.cv_nfSe += 1;
+            if retval != 0 {
+                break;
+            }
+        }
+        retval
+    }
+}
+
+/*
+ * cvSensRhs1Wrapper
+ *
+ * cvSensRhs1Wrapper is a high level routine that returns right-hand
+ * side of the is-th sensitivity equation.
+ *
+ * cvSensRhs1Wrapper is called only during the CV_STAGGERED1 corrector loop
+ * (ifS must be CV_ONESENS, otherwise CVodeSensInit would have
+ * issued an error message).
+ *
+ * The return value is that of the sensitivity RHS function fS1,
+ */
+pub(crate) fn cvSensRhs1Wrapper(
+    cv_mem: &mut CVodeMem,
+    time: f64,
+    ycur: &NVector,
+    fcur: &NVector,
+    is: i32,
+    yScur: &NVector,
+    fScur: &mut NVector,
+    temp1: &mut NVector,
+    temp2: &mut NVector,
+) -> i32 {
+    let ns = cv_mem.cv_Ns;
+    let retval = if cv_mem.cv_fSDQ {
+        cvSensRhs1InternalDQ(cv_mem, ns, time, ycur, fcur, is, yScur, fScur, temp1, temp2)
+    } else {
+        let fS1 = cv_mem.cv_fS1.unwrap();
+        fS1(ns, time, ycur, fcur, is, yScur, fScur, &mut cv_mem.cv_user_data, temp1, temp2)
+    };
+    cv_mem.cv_nfSe += 1;
+    retval
+}
+
+/*
+ * -----------------------------------------------------------------
+ * Internal DQ approximations for sensitivity RHS
+ * -----------------------------------------------------------------
+ */
+
+/*
+ * cvSensRhsInternalDQ   - internal CVSensRhsFn
+ *
+ * cvSensRhsInternalDQ computes right hand side of all sensitivity equations
+ * by finite differences
+ */
+pub(crate) fn cvSensRhsInternalDQ(
+    cv_mem: &mut CVodeMem,
+    Ns: i32,
+    t: f64,
+    y: &NVector,
+    ydot: &NVector,
+    yS: &[NVector],
+    ySdot: &mut [NVector],
+    ytemp: &mut NVector,
+    ftemp: &mut NVector,
+) -> i32 {
+    for is in 0..Ns as usize {
+        let retval =
+            cvSensRhs1InternalDQ(cv_mem, Ns, t, y, ydot, is as i32, &yS[is], &mut ySdot[is], ytemp, ftemp);
+        if retval != 0 {
+            return retval;
+        }
+    }
+
+    0
+}
+
+/*
+ * cvSensRhs1InternalDQ   - internal CVSensRhs1Fn
+ *
+ * cvSensRhs1InternalDQ computes the right hand side of the is-th sensitivity
+ * equation by finite differences
+ *
+ * cvSensRhs1InternalDQ returns 0 if successful. Otherwise it returns the
+ * non-zero return value from f().
+ */
+fn cvSensRhs1InternalDQ(
+    cv_mem: &mut CVodeMem,
+    _Ns: i32,
+    t: f64,
+    y: &NVector,
+    ydot: &NVector,
+    is: i32,
+    yS: &NVector,
+    ySdot: &mut NVector,
+    ytemp: &mut NVector,
+    ftemp: &mut NVector,
+) -> i32 {
+    let mut nfel: i64 = 0;
+
+    let delta = SUNRsqrt(SUNMAX(cv_mem.cv_reltol, cv_mem.cv_uround));
+    let rdelta = ONE / delta;
+
+    let pbari = cv_mem.cv_pbar[is as usize];
+
+    let which = cv_mem.cv_plist[is as usize] as usize;
+
+    let psave = cv_mem.cv_p[which];
+
+    let Deltap = pbari * delta;
+    let rDeltap = ONE / Deltap;
+    let norms = N_VWrmsNorm(yS, &cv_mem.cv_ewt) * pbari;
+    let rDeltay = SUNMAX(norms, rdelta) / pbari;
+    let Deltay = ONE / rDeltay;
+
+    let method = if cv_mem.cv_DQrhomax == ZERO {
+        /* No switching */
+        if cv_mem.cv_DQtype == CV_CENTERED { CENTERED1 } else { FORWARD1 }
+    } else {
+        /* switch between simultaneous/separate DQ */
+        let ratio = Deltay * rDeltap;
+        if SUNMAX(ONE / ratio, ratio) <= cv_mem.cv_DQrhomax {
+            if cv_mem.cv_DQtype == CV_CENTERED { CENTERED1 } else { FORWARD1 }
+        } else if cv_mem.cv_DQtype == CV_CENTERED {
+            CENTERED2
+        } else {
+            FORWARD2
+        }
+    };
+
+    /* (fn pointer is Copy; capture before mutating cv_p) */
+    let f = cv_mem.cv_f.unwrap();
+
+    match method {
+        CENTERED1 => {
+            let Delta = SUNMIN(Deltay, Deltap);
+            let r2Delta = HALF / Delta;
+
+            N_VLinearSum(ONE, y, Delta, yS, ytemp);
+            cv_mem.cv_p[which] = psave + Delta;
+
+            let retval = f(t, ytemp, ySdot, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            N_VLinearSum(ONE, y, -Delta, yS, ytemp);
+            cv_mem.cv_p[which] = psave - Delta;
+
+            let retval = f(t, ytemp, ftemp, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* ySdot = r2Delta*ySdot - r2Delta*ftemp (aliased) */
+            ySdot.linear_sum_with(r2Delta, -r2Delta, ftemp);
+        }
+
+        CENTERED2 => {
+            let r2Deltap = HALF / Deltap;
+            let r2Deltay = HALF / Deltay;
+
+            N_VLinearSum(ONE, y, Deltay, yS, ytemp);
+
+            let retval = f(t, ytemp, ySdot, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            N_VLinearSum(ONE, y, -Deltay, yS, ytemp);
+
+            let retval = f(t, ytemp, ftemp, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* ySdot = r2Deltay*ySdot - r2Deltay*ftemp (aliased) */
+            ySdot.linear_sum_with(r2Deltay, -r2Deltay, ftemp);
+
+            cv_mem.cv_p[which] = psave + Deltap;
+            let retval = f(t, y, ytemp, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            cv_mem.cv_p[which] = psave - Deltap;
+            let retval = f(t, y, ftemp, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* ySdot = ySdot + r2Deltap * ytemp - r2Deltap * ftemp
+               (N_VLinearCombination(3, {1, r2Deltap, -r2Deltap},
+                {ySdot, ytemp, ftemp}, ySdot)) */
+            for j in 0..ySdot.data.len() {
+                let a = ySdot.data[j];
+                let b = ytemp.data[j];
+                let c = ftemp.data[j];
+                ySdot.data[j] = a + r2Deltap * b + (-r2Deltap) * c;
+            }
+        }
+
+        FORWARD1 => {
+            let Delta = SUNMIN(Deltay, Deltap);
+            let rDelta = ONE / Delta;
+
+            N_VLinearSum(ONE, y, Delta, yS, ytemp);
+            cv_mem.cv_p[which] = psave + Delta;
+
+            let retval = f(t, ytemp, ySdot, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* ySdot = rDelta*ySdot - rDelta*ydot (aliased) */
+            ySdot.linear_sum_with(rDelta, -rDelta, ydot);
+        }
+
+        FORWARD2 => {
+            N_VLinearSum(ONE, y, Deltay, yS, ytemp);
+
+            let retval = f(t, ytemp, ySdot, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* ySdot = rDeltay*ySdot - rDeltay*ydot (aliased) */
+            ySdot.linear_sum_with(rDeltay, -rDeltay, ydot);
+
+            cv_mem.cv_p[which] = psave + Deltap;
+            let retval = f(t, y, ytemp, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* ySdot = ySdot + rDeltap * ytemp - rDeltap * ydot
+               (N_VLinearCombination(3, {1, rDeltap, -rDeltap},
+                {ySdot, ytemp, ydot}, ySdot)) */
+            for j in 0..ySdot.data.len() {
+                let a = ySdot.data[j];
+                let b = ytemp.data[j];
+                let c = ydot.data[j];
+                ySdot.data[j] = a + rDeltap * b + (-rDeltap) * c;
+            }
+        }
+
+        _ => {}
+    }
+
+    cv_mem.cv_p[which] = psave;
+
+    /* Increment counter nfeS */
+    cv_mem.cv_nfeS += nfel;
+
+    0
+}
+
+/*
+ * cvQuadSensRhsInternalDQ   - internal CVQuadSensRhsFn
+ *
+ * cvQuadSensRhsInternalDQ computes right hand side of all quadrature
+ * sensitivity equations by finite differences. All work is actually
+ * done in cvQuadSensRhs1InternalDQ.
+ */
+pub(crate) fn cvQuadSensRhsInternalDQ(
+    cv_mem: &mut CVodeMem,
+    Ns: i32,
+    t: f64,
+    y: &NVector,
+    yS: &[NVector],
+    yQdot: &NVector,
+    yQSdot: &mut [NVector],
+    tmp: &mut NVector,
+    tmpQ: &mut NVector,
+) -> i32 {
+    for is in 0..Ns as usize {
+        let retval =
+            cvQuadSensRhs1InternalDQ(cv_mem, is as i32, t, y, &yS[is], yQdot, &mut yQSdot[is], tmp, tmpQ);
+        if retval != 0 {
+            return retval;
+        }
+    }
+
+    0
+}
+
+fn cvQuadSensRhs1InternalDQ(
+    cv_mem: &mut CVodeMem,
+    is: i32,
+    t: f64,
+    y: &NVector,
+    yS: &NVector,
+    yQdot: &NVector,
+    yQSdot: &mut NVector,
+    tmp: &mut NVector,
+    tmpQ: &mut NVector,
+) -> i32 {
+    let mut nfel: i64 = 0;
+
+    let delta = SUNRsqrt(SUNMAX(cv_mem.cv_reltol, cv_mem.cv_uround));
+    let rdelta = ONE / delta;
+
+    let pbari = cv_mem.cv_pbar[is as usize];
+
+    let which = cv_mem.cv_plist[is as usize] as usize;
+
+    let psave = cv_mem.cv_p[which];
+
+    let Deltap = pbari * delta;
+    let norms = N_VWrmsNorm(yS, &cv_mem.cv_ewt) * pbari;
+    let rDeltay = SUNMAX(norms, rdelta) / pbari;
+    let Deltay = ONE / rDeltay;
+
+    let method = if cv_mem.cv_DQtype == CV_CENTERED { CENTERED1 } else { FORWARD1 };
+
+    /* (fn pointer is Copy; capture before mutating cv_p) */
+    let fQ = cv_mem.cv_fQ.unwrap();
+
+    match method {
+        CENTERED1 => {
+            let Delta = SUNMIN(Deltay, Deltap);
+            let r2Delta = HALF / Delta;
+
+            N_VLinearSum(ONE, y, Delta, yS, tmp);
+            cv_mem.cv_p[which] = psave + Delta;
+
+            let retval = fQ(t, tmp, yQSdot, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            N_VLinearSum(ONE, y, -Delta, yS, tmp);
+            cv_mem.cv_p[which] = psave - Delta;
+
+            let retval = fQ(t, tmp, tmpQ, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* yQSdot = r2Delta*yQSdot - r2Delta*tmpQ (aliased) */
+            yQSdot.linear_sum_with(r2Delta, -r2Delta, tmpQ);
+        }
+
+        FORWARD1 => {
+            let Delta = SUNMIN(Deltay, Deltap);
+            let rDelta = ONE / Delta;
+
+            N_VLinearSum(ONE, y, Delta, yS, tmp);
+            cv_mem.cv_p[which] = psave + Delta;
+
+            let retval = fQ(t, tmp, yQSdot, &mut cv_mem.cv_user_data);
+            nfel += 1;
+            if retval != 0 {
+                return retval;
+            }
+
+            /* yQSdot = rDelta*yQSdot - rDelta*yQdot (aliased) */
+            yQSdot.linear_sum_with(rDelta, -rDelta, yQdot);
+        }
+
+        _ => {}
+    }
+
+    cv_mem.cv_p[which] = psave;
+
+    /* Increment counter nfQeS */
+    cv_mem.cv_nfQeS += nfel;
+
+    0
+}
+
+// ===================== END PART 3 (cvodes.c:5874-10126) =====================
+// (cvProcessError is defined in cvodes_impl.rs)
