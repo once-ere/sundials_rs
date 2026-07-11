@@ -13,6 +13,21 @@
 #![allow(non_upper_case_globals)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
+/* clippy 1.94 stylistic lints on deliberately C-faithful constructs
+   (same rationale as the sundials_core crate-level allows):
+   - unnecessary_unwrap: `if x.is_some()` + `unwrap()` mirrors the C
+     `if (ptr)` guard followed by direct use, keeping bodies line-for-line
+   - needless_borrow / explicit_auto_deref: the `&mut *guard` RefCell
+     reborrow in the iterative-solve closures (donor pattern)
+   - ptr_arg: `&mut Vec<NVector>` where an empty Vec plays the C NULL
+     N_Vector* and the callee may resize (idaLsGetY / idaa interpolation)
+   - field_reassign_with_default: Default::default() + field assignments
+     mirrors the C memset(0) + explicit-assignment initialization style */
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::explicit_auto_deref)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::field_reassign_with_default)]
 #![forbid(unsafe_code)]
 
 // Shared SUNDIALS core (re-exported so donor `crate::<mod>` paths resolve)
@@ -43,9 +58,13 @@ pub use sundials_core::sunnonlinsol_fixedpoint;
 
 // IDAS proper (modules land phase by phase; see ../../PROGRESS.md)
 pub mod idas_impl;
+pub mod idas_ls;
+pub mod idas_ls_impl;
 
 // Flat prelude so examples can `use idas_rs::*;` like a C `#include`.
 pub use crate::idas_impl::*;
+pub use crate::idas_ls::*;
+pub use crate::idas_ls_impl::*;
 pub use crate::nvector_serial::*;
 pub use crate::sundials_context::*;
 pub use crate::sundials_errors::*;
