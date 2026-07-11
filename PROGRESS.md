@@ -621,9 +621,19 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       idaLsSolveIterative.  4 tests: donor's needs-lmem + DQ-Jacobian/
       solve round-trip, new ReInit reset check, new NO_ADJ guards for
       the B entry points.  Gate green 2026-07-11 (19 idas_rs tests).)
-- [ ] idas_cli.c — todo
-- [ ] idaa.c — todo
+- [ ] idaa.c — todo (REORDERED before idas_cli.c 2026-07-11: the cli
+      key tables reference IDAAdjSetNoSensi / IDASetMaxOrdB /
+      IDASStolerancesB etc., which live in idaa.c/idaa_io.c — porting
+      cli first would bank another uncompilable file.  Structural donor
+      crates/cvodes_rs/src/cvodea.rs.  Binding pins to satisfy: replace
+      idaLsGetY unreachable! in idas_ls.rs with ia_interpType dispatch
+      to IDAAhermiteGetY/IDAApolynomialGetY; install the OUTER IDAMem as
+      each backward problem's inner UserData (the idas_ls.rs and
+      idas_bbdpre.rs PART II wrappers depend on it).)
 - [ ] idaa_io.c — todo
+- [ ] idas_cli.c — todo (after idaa_io.c; donor ida_cli.rs + quad/sens/
+      B-setter key tables incl. twoint/int-real/int-real-real/int-long
+      pair tables)
 ### excluded (idas) examples
 idasRoberts_klu, idasRoberts_sps, idasRoberts_ASAi_klu, idasRoberts_ASAi_sps,
 idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
