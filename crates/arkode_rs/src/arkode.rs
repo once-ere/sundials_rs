@@ -2544,6 +2544,194 @@ pub fn ARKodeEvolve(
     istate
 }
 
+/*---------------------------------------------------------------
+  ARKodeSStolerances, ARKodeSVtolerances, ARKodeWFtolerances:
+
+  These functions specify the integration tolerances. One of them
+  SHOULD be called before the first call to ARKodeEvolve; otherwise
+  default values of reltol=1e-4 and abstol=1e-9 will be used, which
+  may be entirely incorrect for a specific problem.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSStolerances(ark_mem: &mut ARKodeMem, reltol: f64, abstol: f64) -> i32 {
+    use crate::arkode_impl::{ARK_ILL_INPUT, ARK_NO_MALLOC, ARK_SS};
+
+    /* Check inputs */
+    if !ark_mem.MallocDone {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_NO_MALLOC,
+            line!(),
+            "ARKodeSStolerances",
+            file!(),
+            "Attempt to call before ARKODE initialized.",
+        );
+        return ARK_NO_MALLOC;
+    }
+    if reltol < ZERO {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSStolerances",
+            file!(),
+            "reltol < 0 illegal.",
+        );
+        return ARK_ILL_INPUT;
+    }
+    if abstol < ZERO {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSStolerances",
+            file!(),
+            "abstol has negative component(s) (illegal).",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* (N_VAddConst is always provided by the serial vector) */
+
+    /* Set flag indicating whether abstol == 0 */
+    ark_mem.atolmin0 = abstol == ZERO;
+
+    /* Copy tolerances into memory */
+    ark_mem.reltol = reltol;
+    ark_mem.Sabstol = abstol;
+    ark_mem.itol = ARK_SS;
+
+    /* enforce use of arkEwtSetSS (internal dispatch, Addendum C.1) */
+    ark_mem.user_efun = false;
+    ark_mem.efun = None;
+    ark_mem.e_data = None;
+
+    ARK_SUCCESS
+}
+
+pub fn ARKodeSVtolerances(ark_mem: &mut ARKodeMem, reltol: f64, abstol: &NVector) -> i32 {
+    use crate::arkode_impl::{ARK_ILL_INPUT, ARK_NO_MALLOC, ARK_SV};
+    use crate::nvector_serial::{N_VMin, N_VScale};
+
+    /* Check inputs */
+    if !ark_mem.MallocDone {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_NO_MALLOC,
+            line!(),
+            "ARKodeSVtolerances",
+            file!(),
+            "Attempt to call before ARKODE initialized.",
+        );
+        return ARK_NO_MALLOC;
+    }
+    if reltol < ZERO {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSVtolerances",
+            file!(),
+            "reltol < 0 illegal.",
+        );
+        return ARK_ILL_INPUT;
+    }
+    let abstolmin = N_VMin(abstol);
+    if abstolmin < ZERO {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSVtolerances",
+            file!(),
+            "abstol has negative component(s) (illegal).",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* Set flag indicating whether min(abstol) == 0 */
+    ark_mem.atolmin0 = abstolmin == ZERO;
+
+    /* Copy tolerances into memory */
+    if !ark_mem.VabstolMallocDone {
+        /* arkAllocVec(ark_mem, ewt, &Vabstol) */
+        ark_mem.Vabstol = Some(NVector::new(ark_mem.ewt.data.len()));
+        ark_mem.lrw += ark_mem.lrw1;
+        ark_mem.liw += ark_mem.liw1;
+        ark_mem.VabstolMallocDone = true;
+    }
+    N_VScale(1.0, abstol, ark_mem.Vabstol.as_mut().unwrap());
+    ark_mem.reltol = reltol;
+    ark_mem.itol = ARK_SV;
+
+    /* enforce use of arkEwtSetSV (internal dispatch, Addendum C.1) */
+    ark_mem.user_efun = false;
+    ark_mem.efun = None;
+    ark_mem.e_data = None;
+
+    ARK_SUCCESS
+}
+
+pub fn ARKodeWFtolerances(ark_mem: &mut ARKodeMem, efun: crate::arkode_impl::ARKEwtFn) -> i32 {
+    use crate::arkode_impl::{ARK_NO_MALLOC, ARK_WF};
+
+    if !ark_mem.MallocDone {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_NO_MALLOC,
+            line!(),
+            "ARKodeWFtolerances",
+            file!(),
+            "Attempt to call before ARKODE initialized.",
+        );
+        return ARK_NO_MALLOC;
+    }
+
+    /* Copy tolerance data into memory (C: e_data = user_data; the user
+    efun receives ark_mem.user_data through the dispatch helper) */
+    ark_mem.itol = ARK_WF;
+    ark_mem.user_efun = true;
+    ark_mem.efun = Some(efun);
+    ark_mem.e_data = None;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeFree:
+
+  This routine frees the ARKODE infrastructure memory (all the
+  C free() calls become drops).
+  ---------------------------------------------------------------*/
+pub fn ARKodeFree(arkode_mem: &mut Option<Box<ARKodeMem>>) {
+    let mut ark_mem = match arkode_mem.take() {
+        None => return,
+        Some(m) => m,
+    };
+
+    /* free the time-stepper module memory (if provided) */
+    if let Some(step_free) = ark_mem.step_free {
+        step_free(&mut ark_mem);
+    }
+
+    /* free vector storage */
+    arkFreeVectors(&mut ark_mem);
+
+    /* free the time step adaptivity module (the controller and the
+    structure drop with it) */
+    ark_mem.hadapt_mem = None;
+
+    /* free the interpolation module */
+    crate::arkode_interp::arkInterpFree(&mut ark_mem);
+
+    /* free the root-finding module */
+    if ark_mem.root_mem.is_some() {
+        let _ = crate::arkode_root::arkRootFree(&mut ark_mem);
+    }
+
+    /* free the relaxation module, constraints, step memory: drop */
+    drop(ark_mem);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

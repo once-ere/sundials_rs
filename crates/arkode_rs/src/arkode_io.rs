@@ -165,3 +165,223 @@ mod tests {
         assert_eq!(w.data[0], SUN_SMALL_REAL);
     }
 }
+
+/*---------------------------------------------------------------
+  ARKodeSetUserData:
+
+  Specifies the user data pointer for f
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetUserData(ark_mem: &mut ARKodeMem, user_data: crate::sundials_types::UserData) -> i32 {
+    ark_mem.user_data = user_data;
+
+    /* efun/rfun data and root_data follow user_data automatically in
+    this port (the dispatch helpers read ark_mem.user_data) */
+
+    /* Set user data into stepper (if provided; the stepper op reads
+    ark_mem.user_data itself) */
+    if let Some(step_setuserdata) = ark_mem.step_setuserdata {
+        return step_setuserdata(ark_mem);
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetInitStep:
+
+  Specifies the initial step size to be attempted.  Passing 0
+  sets the default, otherwise use input.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetInitStep(ark_mem: &mut ARKodeMem, hin: f64) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_CONTROLLER_ERR, ARK_STEPPER_UNSUPPORTED};
+
+    /* Guard against hin==0 for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive && hin == ZERO {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetInitStep",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Passing hin=0 sets the default, otherwise use input. */
+    if hin == ZERO {
+        ark_mem.hin = ZERO;
+    } else {
+        ark_mem.hin = hin;
+    }
+
+    /* Clear previous initial step */
+    ark_mem.h0u = ZERO;
+
+    /* Reset error controller (e.g., error and step size history) */
+    if let Some(hcontroller) = ark_mem.hadapt_mem.as_mut().unwrap().hcontroller.as_mut() {
+        let retval = crate::sundials_adaptcontroller::SUNAdaptController_Reset(hcontroller);
+        if retval != crate::sundials_errors::SUN_SUCCESS {
+            return ARK_CONTROLLER_ERR;
+        }
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetFixedStep:
+
+  Specifies to use a fixed time step size instead of performing
+  any form of temporal adaptivity.  ARKODE will use this step size
+  for all steps (unless tstop is set, in which case it may need to
+  modify that last step approaching tstop.  If any solver failure
+  occurs in the timestepping module, ARKODE will typically
+  immediately return with an error message indicating that the
+  selected step size cannot be used.
+
+  Any nonzero argument will result in the use of that fixed step
+  size; an argument of 0 will re-enable temporal adaptivity.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetFixedStep(ark_mem: &mut ARKodeMem, hfixed: f64) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, ARK_SV};
+
+    /* ensure that when hfixed=0, the time step module supports adaptivity */
+    if hfixed == ZERO && !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetFixedStep",
+            file!(),
+            "temporal adaptivity is not supported by this time step module",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* re-attach internal error weight functions if necessary */
+    if hfixed == ZERO && !ark_mem.user_efun {
+        let retval = if ark_mem.itol == ARK_SV && ark_mem.Vabstol.is_some() {
+            let vabstol = ark_mem.Vabstol.take().unwrap();
+            let r = crate::arkode::ARKodeSVtolerances(ark_mem, ark_mem.reltol, &vabstol);
+            ark_mem.Vabstol = Some(vabstol);
+            r
+        } else {
+            crate::arkode::ARKodeSStolerances(ark_mem, ark_mem.reltol, ark_mem.Sabstol)
+        };
+        if retval != ARK_SUCCESS {
+            return retval;
+        }
+    }
+
+    /* set ark_mem "fixedstep" entry */
+    if hfixed != ZERO {
+        ark_mem.fixedstep = true;
+        ark_mem.hin = hfixed;
+    } else {
+        ark_mem.fixedstep = false;
+    }
+
+    /* Notify ARKODE to use hfixed as the initial step size, and return */
+    ARKodeSetInitStep(ark_mem, hfixed)
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxNumSteps:
+
+  Specifies the maximum number of integration steps
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxNumSteps(ark_mem: &mut ARKodeMem, mxsteps: i64) -> i32 {
+    /* Passing mxsteps=0 sets the default. Passing mxsteps<0 disables the
+    test. */
+    if mxsteps == 0 {
+        ark_mem.mxstep = MXSTEP_DEFAULT;
+    } else {
+        ark_mem.mxstep = mxsteps;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetStopTime:
+
+  Specifies the time beyond which the integration is not to proceed.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetStopTime(ark_mem: &mut ARKodeMem, tstop: f64) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_ILL_INPUT};
+    use crate::sundials_utils::fmt_g;
+
+    /* If ARKODE was called at least once, test if tstop is legal (i.e. if
+    it was not already passed). If ARKodeSetStopTime is called before the
+    first call to ARKODE, tstop will be checked in ARKODE. */
+    if ark_mem.nst > 0 {
+        if (tstop - ark_mem.tcur) * ark_mem.h < ZERO {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKodeSetStopTime",
+                file!(),
+                &format!(
+                    "The value tstop = {} is behind current t = {} in the direction of integration.",
+                    fmt_g(tstop, 0, 15),
+                    fmt_g(ark_mem.tcur, 0, 15)
+                ),
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    ark_mem.tstop = tstop;
+    ark_mem.tstopset = true;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetInterpolantDegree:
+
+  Specifies the polynomial degree for the dense output
+  interpolation module.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetInterpolantDegree(ark_mem: &mut ARKodeMem, degree: i32) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_ILL_INPUT, ARK_INTERP_FAIL, ARK_INTERP_MAX_DEGREE};
+
+    /* do not change degree once the module has been initialized */
+    if ark_mem.initialized {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_INTERP_FAIL,
+            line!(),
+            "ARKodeSetInterpolantDegree",
+            file!(),
+            "Degree cannot be specified after module initialization.",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    if degree > ARK_INTERP_MAX_DEGREE {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSetInterpolantDegree",
+            file!(),
+            "Illegal degree specified.",
+        );
+        return ARK_ILL_INPUT;
+    } else if degree < 0 {
+        ark_mem.interp_degree = ARK_INTERP_MAX_DEGREE;
+    } else {
+        ark_mem.interp_degree = degree;
+    }
+
+    /* Set the degree now if possible otherwise it will be used when
+    creating the interpolation module */
+    if ark_mem.interp.is_some() {
+        return crate::arkode_interp::arkInterpSetDegree(ark_mem, ark_mem.interp_degree);
+    }
+
+    ARK_SUCCESS
+}
