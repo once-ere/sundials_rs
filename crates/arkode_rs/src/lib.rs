@@ -87,6 +87,9 @@ pub mod arkode_interp;
 pub mod arkode_adapt;
 pub mod arkode_root;
 pub mod arkode_io;
+pub mod arkode_erkstep_impl;
+pub mod arkode_erkstep;
+pub mod arkode_erkstep_io;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
 pub use crate::arkode_impl::*;

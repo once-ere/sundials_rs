@@ -884,7 +884,13 @@ mod tests {
 
         /* same count, different g: just swaps the function */
         assert_eq!(ARKodeRootInit(&mut ark_mem, 1, Some(g_zero_at_t0)), ARK_SUCCESS);
-        assert_eq!(ark_mem.root_mem.as_ref().unwrap().gfun, Some(g_zero_at_t0 as ARKRootFn));
+        #[allow(unpredictable_function_pointer_comparisons)]
+        {
+            assert_eq!(
+                ark_mem.root_mem.as_ref().unwrap().gfun,
+                Some(g_zero_at_t0 as ARKRootFn)
+            );
+        }
 
         /* same count, NULL g: error */
         assert_eq!(ARKodeRootInit(&mut ark_mem, 1, None), ARK_ILL_INPUT);

@@ -813,9 +813,9 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_adapt.c — committed (arkAdapt signature drops the always-ark_mem-derived hadapt_mem/ycur args per Addendum C.1; SUNRcopysign added to sundials_math)
 - [x] arkode_root_impl.h — committed (ARKodeRootMem struct, C int*/realtype* arrays -> Vec)
 - [x] arkode_root.c — committed (RootInit/Free/PrintMem/Check1-3/Rootfind; root_mem take/put-back wrappers; root_data alias collapsed to ark_mem.user_data; ARKodeGetDky ported into arkode.rs PART I)
-- [ ] arkode_erkstep_impl.h — todo
-- [ ] arkode_erkstep.c — todo
-- [ ] arkode_erkstep_io.c — todo
+- [x] arkode_erkstep_impl.h — committed (ARKodeERKStepMem; Xvecs pointer array replaced by call-site operand assembly, liw accounting kept; adj_f deferred with the adjoint machinery)
+- [ ] arkode_erkstep.c — PART I committed (ERKStepCreate/ReInit, erkStep Init/FullRHS/TakeStep/Resize/Free/PrintMem, SetButcherTable/CheckButcherTable/ComputeSolutions, ApplyForcing/SetInnerForcing; step_mem take/put-back with release around the FullRHS re-entry). Deferred: TakeStep_Adjoint/fe_Adj/CreateAdjointStepper (ManyVector), RelaxDeltaE (relaxation)
+- [ ] arkode_erkstep_io.c — PART I committed (erkStep SetDefaults/SetOrder/GetNumRhsEvals/GetEstLocalErrors/GetStageIndex/PrintAllStats/WriteParameters + ERKStepSetTable/Num/Name, GetCurrentButcherTable (copy), GetTimestepperStats). Remaining: deprecated ERKStep* wrapper aliases, SetOptions/SetRelaxFn
 - [ ] arkode_ls_impl.h — todo
 - [ ] arkode_ls.c — todo
 - [ ] arkode_arkstep_impl.h — todo

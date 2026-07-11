@@ -385,3 +385,62 @@ pub fn ARKodeSetInterpolantDegree(ark_mem: &mut ARKodeMem, degree: i32) -> i32 {
 
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  arkReplaceAdaptController:
+
+  Replaces the current SUNAdaptController time step controller
+  object. On NULL-valued input the default (I) controller is
+  created.
+  ---------------------------------------------------------------*/
+pub fn arkReplaceAdaptController(
+    ark_mem: &mut ARKodeMem,
+    c: Option<crate::sundials_adaptcontroller::SUNAdaptController>,
+    take_ownership: bool,
+) -> i32 {
+    use crate::sundials_adaptcontroller::SUNAdaptController_Space;
+
+    let mut lenrw: i64 = 0;
+    let mut leniw: i64 = 0;
+
+    /* Remove current SUNAdaptController object
+    (delete if owned, and then nullify pointer) */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if hadapt_mem.owncontroller {
+        if let Some(hc) = hadapt_mem.hcontroller.as_ref() {
+            let retval = SUNAdaptController_Space(hc, &mut lenrw, &mut leniw);
+            if retval == crate::sundials_errors::SUN_SUCCESS {
+                ark_mem.liw -= leniw;
+                ark_mem.lrw -= lenrw;
+            }
+        }
+
+        /* SUNAdaptController_Destroy = drop */
+        let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+        hadapt_mem.hcontroller = None;
+        hadapt_mem.owncontroller = false;
+    }
+    ark_mem.hadapt_mem.as_mut().unwrap().hcontroller = None;
+
+    /* On NULL-valued input, create default SUNAdaptController object */
+    let c = match c {
+        None => {
+            ark_mem.hadapt_mem.as_mut().unwrap().owncontroller = true;
+            crate::sunadaptcontroller_soderlind::SUNAdaptController_I()
+        }
+        Some(c) => {
+            ark_mem.hadapt_mem.as_mut().unwrap().owncontroller = take_ownership;
+            c
+        }
+    };
+
+    /* Attach new SUNAdaptController object */
+    let retval = SUNAdaptController_Space(&c, &mut lenrw, &mut leniw);
+    if retval == crate::sundials_errors::SUN_SUCCESS {
+        ark_mem.liw += leniw;
+        ark_mem.lrw += lenrw;
+    }
+    ark_mem.hadapt_mem.as_mut().unwrap().hcontroller = Some(c);
+
+    ARK_SUCCESS
+}

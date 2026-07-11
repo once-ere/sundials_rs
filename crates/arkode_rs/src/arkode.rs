@@ -2946,3 +2946,43 @@ mod tests {
         assert!((yout.data[0] - 4.0).abs() < 1e-8, "yout = {}", yout.data[0]);
     }
 }
+
+/*---------------------------------------------------------------
+  arkAllocVecArray / arkFreeVecArray:
+
+  Allocate or free a vector array (C keeps the workspace pointers
+  lrw/liw separate from ark_mem exactly as here).
+  ---------------------------------------------------------------*/
+#[allow(clippy::too_many_arguments)]
+pub fn arkAllocVecArray(
+    count: i32,
+    tmpl_len: usize,
+    v: &mut Vec<NVector>,
+    lrw1: i64,
+    lrw: &mut i64,
+    liw1: i64,
+    liw: &mut i64,
+) -> bool {
+    /* allocate the new vector array if necessary */
+    if v.is_empty() {
+        *v = (0..count).map(|_| NVector::new(tmpl_len)).collect();
+        *lrw += count as i64 * lrw1;
+        *liw += count as i64 * liw1;
+    }
+    true
+}
+
+pub fn arkFreeVecArray(
+    count: i32,
+    v: &mut Vec<NVector>,
+    lrw1: i64,
+    lrw: &mut i64,
+    liw1: i64,
+    liw: &mut i64,
+) {
+    if !v.is_empty() {
+        *v = Vec::new();
+        *lrw -= count as i64 * lrw1;
+        *liw -= count as i64 * liw1;
+    }
+}
