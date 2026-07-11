@@ -81,3 +81,5 @@ pub mod sundials_nvector_senswrapper;
 pub mod sundials_stepper;
 pub mod sundials_datanode;
 pub mod sundatanode_inmem;
+pub mod sundials_adjointcheckpointscheme;
+pub mod sunadjointcheckpointscheme_fixed;

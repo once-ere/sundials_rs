@@ -38,8 +38,8 @@ sunnonlinsol_{newton,fixedpoint}.c
 - [x] sundials/sundials_nvector_senswrapper.c — committed
 - [x] sundials/sundials_stepper.c — committed (Phase 6 start; ops stay an Option<fn> table since integrators register them one at a time via Set*Fn; content = UserData; C's uninitialized reinit/resetcheckpointindex/getnumsteps ops noted)
 - [ ] sundials/sundials_adjointstepper.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
-- [ ] sundials/sundials_adjointcheckpointscheme.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
-- [ ] sunadjointcheckpointscheme/fixed/sunadjointcheckpointscheme_fixed.c — DEFERRED to Phase 6 start
+- [x] sundials/sundials_adjointcheckpointscheme.c — committed (Option<fn> registration table like SUNStepper; content = UserData)
+- [x] sunadjointcheckpointscheme/fixed/sunadjointcheckpointscheme_fixed.c — committed (cached node aliases re-derived by key lookup from step_num fields; C UAF corner on re-loading a consumed step returns CHECKPOINT_NOT_FOUND instead)
 - [x] sundials/sundials_datanode.c — committed (enum dispatch; tree owns children, Get* lend &mut borrows, Remove* move the child out; Destroy = drop)
 - [x] sundials/sundatanode/sundatanode_inmem.c — committed (SUNStlVector → Vec, hashmap children own nodes, write-only parent ptr dropped, leaf = SUNMemory bytes [t|BufPack(v)]; N_VBufSize/Pack/Unpack added to nvector_serial)
 
