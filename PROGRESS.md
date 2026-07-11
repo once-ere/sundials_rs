@@ -668,7 +668,21 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       BAD_TB0 + workspace init.  Gate green 2026-07-11 (22 idas_rs
       tests).  ASA numerics verification lands with the idas serial
       examples (idasRoberts_ASAi_dns etc.).)
-- [ ] idaa_io.c — todo
+- [x] idaa_io.c — done → `crates/idas_rs/src/idaa_io.rs` (cvodea_io.rs
+      conventions: shared idaa_io_which_index preamble; IDAAdjSetNoSensi;
+      11 ***B optional-input wrappers delegating to the nested solver
+      (SetNonlinearSolverB via idas_nls, UserDataB stored on IDABMem,
+      MaxOrdB/MaxNumStepsB/InitStepB/MaxStepB/SuppressAlgB/IdB/
+      ConstraintsB/QuadErrConB via idas_io); outputs: IDAGetAdjIDABmem
+      (borrow of nested Box<IDAMem>, None on C NULL paths),
+      IDAadjCheckPointRec with my_addr/next_addr as Option<usize> ck_mem
+      indices (list walked newest-first = Vec reversed),
+      IDAGetAdjCheckPointsInfo, IDAGetConsistentICB, IDAGetUserDataB
+      (borrow-back), IDAGetAdjDataPointHermite/Polynomial (C NULL
+      outputs → Option), IDAGetAdjCurrentCheckPoint (Option<usize>).
+      2 tests: setter delegation + user-data round trip + nested access;
+      checkpoint info/current + wrong-interp guard.  Gate green
+      2026-07-11 (24 idas_rs tests).)
 - [ ] idas_cli.c — todo (after idaa_io.c; donor ida_cli.rs + quad/sens/
       B-setter key tables incl. twoint/int-real/int-real-real/int-long
       pair tables)
