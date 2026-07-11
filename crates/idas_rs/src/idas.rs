@@ -994,7 +994,10 @@ pub fn IDASensSVtolerances(ida_mem: &mut IDAMem, reltolS: f64, abstolS: &[NVecto
     ida_mem.ida_rtolS = reltolS;
 
     if SUNFALSE == ida_mem.ida_VatolSMallocDone {
-        ida_mem.ida_VatolS = N_VCloneVectorArray(ida_mem.ida_Ns as usize, &ida_mem.ida_tempv1);
+        /* (C: N_VCloneVectorArray(Ns, tempv1) → map/collect) */
+        ida_mem.ida_VatolS = (0..ida_mem.ida_Ns as usize)
+            .map(|_| N_VClone(&ida_mem.ida_tempv1))
+            .collect();
         ida_mem.ida_atolSmin0 = vec![SUNFALSE; ida_mem.ida_Ns as usize];
         ida_mem.ida_lrw += ida_mem.ida_Ns as i64 * ida_mem.ida_lrw1;
         ida_mem.ida_liw += ida_mem.ida_Ns as i64 * ida_mem.ida_liw1;
@@ -1227,7 +1230,9 @@ pub fn IDAQuadSensSVtolerances(ida_mem: &mut IDAMem, reltolQS: f64, abstolQS: &[
     if !ida_mem.ida_VatolQSMallocDone {
         /* (C clones from abstolQS[0] here — not tempv1 as in
            IDASensSVtolerances — and counts quadrature vector sizes.) */
-        ida_mem.ida_VatolQS = N_VCloneVectorArray(ida_mem.ida_Ns as usize, &abstolQS[0]);
+        ida_mem.ida_VatolQS = (0..ida_mem.ida_Ns as usize)
+            .map(|_| N_VClone(&abstolQS[0]))
+            .collect();
         ida_mem.ida_atolQSmin0 = vec![SUNFALSE; ida_mem.ida_Ns as usize];
         ida_mem.ida_lrw += ida_mem.ida_Ns as i64 * ida_mem.ida_lrw1Q;
         ida_mem.ida_liw += ida_mem.ida_Ns as i64 * ida_mem.ida_liw1Q;

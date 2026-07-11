@@ -547,9 +547,56 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
   lib.rs with rationale (unnecessary_unwrap / needless_borrow /
   explicit_auto_deref / ptr_arg / field_reassign_with_default — all on
   C-faithful constructs).
-- [ ] idas_nls.c — todo
-- [ ] idas_nls_sim.c — todo
-- [ ] idas_nls_stg.c — todo
+- [x] idas_nls.c — done → `crates/idas_rs/src/idas_nls.rs` (donor
+      ida_nls.rs verbatim + IDAS deltas: idaNlsLSetup clears ida_forceSetup
+      and resets ida_ssS = TWENTY; IDANls carries the idas.c driver —
+      sensi_sim = sensi && ism==IDA_SIMULTANEOUS dispatches the composite
+      solve to idas_nls_sim::idaNlsSolveSensSim on NLSsim, ida_forceSetup
+      joins the lsetup decision, cj!=cjlast also sets ssS=HUNDRED, and the
+      final correction updates yyS/ypS via per-vector N_VLinearSum loops.
+      ida_forceSetup field ADDED to idas_impl.rs (was missing; C
+      idas_impl.h:479) — IDAInit/IDAReInit already cleared it in the banked
+      idas.rs. 3 donor tests carried (+ forceSetup/ssS delta assertions).)
+- [x] idas_nls_sim.c — done → `crates/idas_rs/src/idas_nls_sim.rs`
+      (SIMULTANEOUS corrector on [ee, eeS] following the cvodes_nls_sim.rs
+      pinned senswrapper design: ypredictSim/ycorSim/ewtSim aliases NOT
+      stored — module reads yypredict/yySpredict, ee/eeS, ewt/ewtS
+      directly; only NewtonSolver.deltaS (Ns+1 sub-vectors, sub-vector 0 =
+      state) is a real senswrapper; composite WRMS = MAX over sub-norms,
+      init 0, state first. idaNlsResidualSensSim uses the pinned resS
+      dispatch (resSDQ → crate::idas::IDASensResDQ with IDA_mem replacing
+      the user_dataS self-pointer; tmpS1/tmpS2 alias tempv1/tempv2, tmpS3
+      real); nrSe incremented at the call site; lsolve solves state system
+      with ewt then Ns sens systems with ewtS[is] (last nonzero retval
+      mapped after the restore block — C maps every call identically).
+      2 tests: setter rejections/defaults + full IDANls sensi_sim solve.)
+- [x] idas_nls_stg.c — done → `crates/idas_rs/src/idas_nls_stg.rs`
+      (STAGGERED corrector on [eeS] only (Ns sub-vectors, no state slot) +
+      idas.c IDASensNls driver: callLSetup always SUNFALSE, failure bumps
+      ncfnS, success updates yyS/ypS. Staggered deltas vs sim: lsetup
+      counts nsetupsS (not nsetups), does NOT clear forceSetup, and passes
+      ida_delta as the residual + tmpS1..3 as temps (NOTE recorded: the
+      band-DQ yptemp scratch lands in tempv3 instead of C's tmpS3 — dead
+      scratch either way, Jacobian bit-identical); lsolve/residual use
+      rescur/resval = ida_delta; the m==0 direct conv test compares
+      delnrm <= toldel itself (no PT0001 factor) and the rate estimate
+      reads/updates ida_ssS. 2 tests: setter rejections/defaults + state
+      IDANls → IDASensNls staggered flow (nsetupsS stays 0).)
+      REGISTRATION (this unit): lib.rs now registers idas, idas_ic,
+      idas_io, idas_nls, idas_nls_sim, idas_nls_stg + flat re-exports —
+      the banked idas.rs/idas_ic.rs/idas_io.rs are compile-verified for
+      the first time. Fallout fixed: idas_impl.rs ida_phiS/ida_phiQS
+      changed [Vec<NVector>; MXORDP1] → Vec<Vec<NVector>> (matches the
+      ida_phi Vec modeling and the maxcol+1/maxord+1 live-row allocation
+      in idas.rs; only indexing uses elsewhere); two
+      N_VCloneVectorArray call sites in idas.rs (IDASensSVtolerances /
+      IDAQuadSensSVtolerances) → map/N_VClone/collect idiom; crate-level
+      clippy allows extended with rationale (assign_op_pattern,
+      collapsible_if, needless_return, manual_memcpy, if_same_then_else —
+      the idas.c order-decision ladder's twin MAINTAIN arms,
+      manual_range_contains). Full gate green 2026-07-11: check + clippy
+      -D warnings (core+idas) + workspace build + workspace tests (15
+      idas_rs tests: 8 prior + 7 new NLS).
 - [ ] idas_bbdpre_impl.h — todo
 - [ ] idas_bbdpre.c — todo
 - [ ] idas_cli.c — todo
