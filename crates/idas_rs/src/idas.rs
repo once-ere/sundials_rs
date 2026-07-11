@@ -1555,6 +1555,22 @@ pub fn IDASolve(
             IDAProcessError(Some(ida_mem), IDA_ILL_INPUT, line!(), "IDASolve", file!(), MSG_NULL_P);
             return IDA_ILL_INPUT;
         }
+        /* (Rust-port guard, no C counterpart: the internal DQ perturbs
+           p[which] through the user's own array in C.  Here that is
+           only possible via the FSAUserData convention — without it
+           the user residual would silently see frozen parameters and
+           every sensitivity would come out zero.) */
+        let is_fsa = ida_mem
+            .ida_user_data
+            .as_ref()
+            .map(|d| d.is::<FSAUserData>())
+            .unwrap_or(false);
+        if !is_fsa {
+            IDAProcessError(Some(ida_mem), IDA_ILL_INPUT, line!(), "IDASolve", file!(),
+                            "Internal DQ sensitivities require the FSAUserData user-data \
+                             convention (see sundials_types.rs).");
+            return IDA_ILL_INPUT;
+        }
     }
 
     if ida_mem.ida_quadr_sensi && ida_mem.ida_rhsQSDQ {
@@ -6749,6 +6765,21 @@ pub fn IDASensResDQ(ida_mem: &mut IDAMem, Ns: i32, t: f64, yy: &NVector, yp: &NV
     0
 }
 
+
+/* C's sens-DQ routines perturb the parameter THROUGH the user's own p
+   array (IDASetSensParams stores the pointer, so the user residual
+   sees the perturbed value).  ida_p is an owned copy here; the
+   perturbation is mirrored into the user data through the FSAUserData
+   convention (sundials_types.rs) and restored the same way. */
+fn ida_dq_set_p(ida_mem: &mut IDAMem, which: usize, value: f64) {
+    ida_mem.ida_p[which] = value;
+    if let Some(d) = ida_mem.ida_user_data.as_mut() {
+        if let Some(f) = d.downcast_mut::<FSAUserData>() {
+            f.p[which] = value;
+        }
+    }
+}
+
 /*
  * IDASensRes1DQ
  *
@@ -6813,7 +6844,7 @@ fn IDASensRes1DQ(ida_mem: &mut IDAMem, _Ns: i32, t: f64, yy: &NVector, yp: &NVec
             for (yt, (s, y)) in yptemp.data.iter_mut().zip(ypS.data.iter().zip(&yp.data)) {
                 *yt = delta * *s + *y;
             }
-            ida_mem.ida_p[which] = psave + delta;
+            ida_dq_set_p(ida_mem, which, psave + delta);
 
             /* Save residual in resvalS */
             let retval = res(t, ytemp, yptemp, resvalS, &mut ida_mem.ida_user_data);
@@ -6829,7 +6860,7 @@ fn IDASensRes1DQ(ida_mem: &mut IDAMem, _Ns: i32, t: f64, yy: &NVector, yp: &NVec
             for (yt, (s, y)) in yptemp.data.iter_mut().zip(ypS.data.iter().zip(&yp.data)) {
                 *yt = -delta * *s + *y;
             }
-            ida_mem.ida_p[which] = psave - delta;
+            ida_dq_set_p(ida_mem, which, psave - delta);
 
             /* Save residual in restemp */
             let retval = res(t, ytemp, yptemp, restemp, &mut ida_mem.ida_user_data);
@@ -6887,7 +6918,7 @@ fn IDASensRes1DQ(ida_mem: &mut IDAMem, _Ns: i32, t: f64, yy: &NVector, yp: &NVec
             }
 
             /* Forward perturb parameter */
-            ida_mem.ida_p[which] = psave + delp;
+            ida_dq_set_p(ida_mem, which, psave + delp);
 
             /* Save residual in ytemp */
             let retval = res(t, yy, yp, ytemp, &mut ida_mem.ida_user_data);
@@ -6897,7 +6928,7 @@ fn IDASensRes1DQ(ida_mem: &mut IDAMem, _Ns: i32, t: f64, yy: &NVector, yp: &NVec
             }
 
             /* Backward perturb parameter */
-            ida_mem.ida_p[which] = psave - delp;
+            ida_dq_set_p(ida_mem, which, psave - delp);
 
             /* Save residual in yptemp */
             let retval = res(t, yy, yp, yptemp, &mut ida_mem.ida_user_data);
@@ -6932,7 +6963,7 @@ fn IDASensRes1DQ(ida_mem: &mut IDAMem, _Ns: i32, t: f64, yy: &NVector, yp: &NVec
             for (yt, (s, y)) in yptemp.data.iter_mut().zip(ypS.data.iter().zip(&yp.data)) {
                 *yt = delta * *s + *y;
             }
-            ida_mem.ida_p[which] = psave + delta;
+            ida_dq_set_p(ida_mem, which, psave + delta);
 
             /* Save residual in resvalS */
             let retval = res(t, ytemp, yptemp, resvalS, &mut ida_mem.ida_user_data);
@@ -6971,7 +7002,7 @@ fn IDASensRes1DQ(ida_mem: &mut IDAMem, _Ns: i32, t: f64, yy: &NVector, yp: &NVec
             }
 
             /* Forward perturb parameter */
-            ida_mem.ida_p[which] = psave + delp;
+            ida_dq_set_p(ida_mem, which, psave + delp);
 
             /* Save residual in restemp */
             let retval = res(t, yy, yp, restemp, &mut ida_mem.ida_user_data);
@@ -6997,7 +7028,7 @@ fn IDASensRes1DQ(ida_mem: &mut IDAMem, _Ns: i32, t: f64, yy: &NVector, yp: &NVec
     }
 
     /* Restore original value of parameter */
-    ida_mem.ida_p[which] = psave;
+    ida_dq_set_p(ida_mem, which, psave);
 
     0
 }
@@ -7071,7 +7102,7 @@ fn IDAQuadSensRhs1InternalDQ(ida_mem: &mut IDAMem, is: i32, t: f64, yy: &NVector
             for (yt, (y, s)) in yptmp.data.iter_mut().zip(yp.data.iter().zip(&ypS.data)) {
                 *yt = delta * *s + *y;
             }
-            ida_mem.ida_p[which] = psave + delta;
+            ida_dq_set_p(ida_mem, which, psave + delta);
 
             let retval = rhsQ(t, yytmp, yptmp, resvalQS, &mut ida_mem.ida_user_data);
             nfel += 1;
@@ -7087,7 +7118,7 @@ fn IDAQuadSensRhs1InternalDQ(ida_mem: &mut IDAMem, is: i32, t: f64, yy: &NVector
                 *yt = -delta * *s + *y;
             }
 
-            ida_mem.ida_p[which] = psave - delta;
+            ida_dq_set_p(ida_mem, which, psave - delta);
 
             let retval = rhsQ(t, yytmp, yptmp, tmpQS, &mut ida_mem.ida_user_data);
             nfel += 1;
@@ -7114,7 +7145,7 @@ fn IDAQuadSensRhs1InternalDQ(ida_mem: &mut IDAMem, is: i32, t: f64, yy: &NVector
             for (yt, (y, s)) in yptmp.data.iter_mut().zip(yp.data.iter().zip(&ypS.data)) {
                 *yt = delta * *s + *y;
             }
-            ida_mem.ida_p[which] = psave + delta;
+            ida_dq_set_p(ida_mem, which, psave + delta);
 
             let retval = rhsQ(t, yytmp, yptmp, resvalQS, &mut ida_mem.ida_user_data);
             nfel += 1;
@@ -7131,7 +7162,7 @@ fn IDAQuadSensRhs1InternalDQ(ida_mem: &mut IDAMem, is: i32, t: f64, yy: &NVector
         _ => {}
     }
 
-    ida_mem.ida_p[which] = psave;
+    ida_dq_set_p(ida_mem, which, psave);
     /* Increment counter nrQeS */
     ida_mem.ida_nrQeS += nfel;
 

@@ -255,6 +255,20 @@ pub type CVLocalFn   = fn(nlocal: i64, t: f64, y: &NVector, g: &mut NVector,
 ```
 Return convention preserved: `0` success, `>0` recoverable, `<0` fatal.
 
+**FSA internal-DQ user-data convention (pinned 2026-07-11, sundials_types.rs
+`FSAUserData`).** In C, `CVodeSetSensParams`/`IDASetSensParams` store the
+user's `p` POINTER and the internal difference-quotient sensitivity residuals
+(cvSensRhs1InternalDQ / IDASensRes1DQ / the QuadSens DQs) perturb `p[which]`
+in place — the perturbation reaches the user RHS/residual because `p` aliases
+the user's own parameter array. The Rust ports keep `cv_p`/`ida_p` as owned
+copies, so user code that relies on the INTERNAL DQ sensitivities (fS/resS =
+None) must wrap its data as `FSAUserData { p, user }`; the DQ routines mirror
+each `p[which]` perturbation into `.p` through the user-data downcast (helper
+`ida_dq_set_p`; cvodes must adopt the same helper before its FSA examples —
+its DQ currently perturbs only the dead copy). `IDASolve` guards this: internal
+DQ + non-FSAUserData user data is rejected with IDA_ILL_INPUT instead of
+silently producing zero sensitivities. Analytic-resS users are unaffected.
+
 All public API functions keep their exact C names (`CVodeCreate`, `CVodeInit`,
 `CVodeSStolerances`, `CVodeSetLinearSolver`, `CVode`, `CVodeGetDky`, …) with
 `cvode_mem: &mut CVodeMem` as first argument and `i32` flag returns;

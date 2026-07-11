@@ -749,7 +749,26 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       overrides in tools/verify_args.map) for idas_rs/arkode_rs — also
       auto-verifies idasKrylovDemo_ls_1/_2 and the Analytic_mels
       variant, all IDENTICAL.
-- [ ] idasSlCrank_FSA_dns — todo (fresh; FSA)
+- [x] idasSlCrank_FSA_dns — tolerance-level (fresh port; the first
+      INTERNAL-DQ sensitivity example, and it EXPOSED AND SETTLED the
+      pinned IDASetSensParams p-copy watch item: the DQ perturbs the
+      owned ida_p copy, which the user residual never sees, so all
+      sensitivities silently came out zero (run bit-matched the
+      no-sensi SlCrank_dns).  FIX (pinned, ARCHITECTURE.md §3.6):
+      FSAUserData { p, user } wrapper in sundials_types.rs; the DQ
+      routines mirror every p[which] perturbation into the user data
+      via ida_dq_set_p; IDASolve rejects internal-DQ sensi without the
+      wrapper (ILL_INPUT) instead of silently zeroing.  cvodes_rs has
+      the same latent defect (task chip spawned).  With the fix the
+      example self-validates: FSA dG/dp (3.3346e-01, -3.6375e-01)
+      agrees with its own finite-difference checks; the FD sections are
+      byte-identical to local C.  Remaining diffs vs local C are stats/
+      G-tail/one dG/dp last digit and are tolerance-level only: this C
+      example is provably compiler-flag-unstable (232 vs 263 steps
+      between -fmath-errno and default builds of the SAME source —
+      sincos fusion in the sin/cos-heavy residual, amplified by the DQ's
+      4 extra residual calls per step through the near-tie MIN(dely,
+      delp) pick).  See VERIFICATION.md.
 - [ ] idasRoberts_ASAi_dns — todo (fresh; ASA)
 - [ ] idasAkzoNob_ASAi_dns — todo (fresh; ASA)
 - [ ] idasHessian_ASA_FSA — todo (fresh; 2nd-order ASA+FSA)
