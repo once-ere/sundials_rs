@@ -129,7 +129,7 @@ cvode example currently hits nli==0; worth fixing for parity/robustness.
 | idasRoberts_FSA_dns | todo |
 | idasRoberts_dns | identical |
 | idasSlCrank_FSA_dns | todo |
-| idasSlCrank_dns | todo |
+| idasSlCrank_dns | last-digit(only the G quadrature line, 13th digit vs local C; all 44 trajectory/stats lines byte-identical. Root-caused by bit-level instrumentation: library-side values are bit-identical through the first divergent step — the deviation enters inside the EXAMPLE's own residual, where apple-clang fuses adjacent sin/cos into __sincos_stret (rare 1-ulp differences vs separate calls, first hit at step 74). The C binary itself is flag-fragile at 1e-11 here: -fmath-errno moves G to ...3317697 vs the fused build's ...3378475; ours ...3381925 is 3.5e-13 from the fused build) |
 | idasRoberts_klu / _sps / _ASAi_klu / _ASAi_sps / _FSA_klu / _FSA_sps | excluded(KLU/SuperLU) |
 
 ## arkode_rs (Phase 6)

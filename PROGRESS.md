@@ -719,6 +719,14 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       localref/ — verify_examples.sh defaults to it.)
 - [x] idasKrylovDemo_ls — IDENTICAL (donor + header-indent deltas)
 - [ ] idasSlCrank_dns — todo (donor idaSlCrank_dns.rs)
+- [x] idasSlCrank_dns — last-digit (first quadrature-carrying example:
+      IDAQuadInit + IDAQuadSStolerances + IDASetQuadErrCon + IDAGetQuad
+      all exercised; 44/45 output lines byte-identical to local C; the
+      G line differs in the 13th digit — root-caused to the C example
+      binary's __sincos_stret fusion, see VERIFICATION.md.  The quad
+      error-control path (IDAQuadTestError feeding err_k into eta) was
+      instrumented bit-level against a patched local C build: all
+      library-side values identical.)
 - [ ] idasAkzoNob_dns — todo (fresh port)
 - [ ] idasRoberts_FSA_dns — todo (fresh; FSA — settle the
       FSA-verification watch items here)

@@ -25,3 +25,6 @@ name = "idasKrylovDemo_ls"
 
 [[example]]
 name = "idasAnalytic_mels"
+
+[[example]]
+name = "idasSlCrank_dns"
