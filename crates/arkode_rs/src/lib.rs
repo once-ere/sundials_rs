@@ -89,6 +89,7 @@ pub mod arkode_root;
 pub mod arkode_io;
 pub mod arkode_ls_impl;
 pub mod arkode_ls;
+pub mod arkode_arkstep_impl;
 pub mod arkode_erkstep_impl;
 pub mod arkode_erkstep;
 pub mod arkode_erkstep_io;

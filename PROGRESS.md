@@ -818,7 +818,7 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [ ] arkode_erkstep_io.c — PART I committed (erkStep SetDefaults/SetOrder/GetNumRhsEvals/GetEstLocalErrors/GetStageIndex/PrintAllStats/WriteParameters + ERKStepSetTable/Num/Name, GetCurrentButcherTable (copy), GetTimestepperStats). Remaining: deprecated ERKStep* wrapper aliases, SetOptions/SetRelaxFn
 - [x] arkode_ls_impl.h — committed (ARKLsMem + fn types + ARKLS_* codes; lmem box hoisted onto ARKodeMem.lmem with take/put-back via the step_getlinmem op — Addendum C.1; ARKLsMassMem deferred with the mass half)
 - [ ] arkode_ls.c — PART I committed: system-matrix half (ARKodeSetLinearSolver + Set*/Get* option-stat families + GetLinReturnFlagName, arkLsDQJac dense/band, arkLsDQJtimes, arkLsLinSys, arkLsInitialize/Setup/Solve/Free; iterative solve via RefCell ATimes/PSolve closures with s1=rwt s2=ewt; psetup jcur write-back via Rust-only step_setjcur op). Remaining: ARKLsMassMem half (ARKodeSetMassLinearSolver, arkLsMass*, arkLsMTimes/MPSetup/MPSolve, mass stats)
-- [ ] arkode_arkstep_impl.h — todo
+- [x] arkode_arkstep_impl.h — committed (ARKodeARKStepMem + MAXCOR/CRDOWN/DGMAX/RDIV/MSBP/NLSCOEF + MASS_* + ARKSTEP_DEFAULT_* table IDs; crate->crate_ rename; lmem hoisted per Addendum C.1; Xvecs/adj_fe/fn_implicit/mass-solver fields per modeling notes)
 - [ ] arkode_arkstep.c — todo
 - [ ] arkode_arkstep_io.c — todo
 - [ ] arkode_arkstep_nls.c — todo
