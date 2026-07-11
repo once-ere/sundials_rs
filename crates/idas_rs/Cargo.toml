@@ -22,3 +22,6 @@ name = "idasFoodWeb_bnd"
 
 [[example]]
 name = "idasKrylovDemo_ls"
+
+[[example]]
+name = "idasAnalytic_mels"
