@@ -807,8 +807,8 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_butcher_dirk.c (+ .def) — committed (27 tables; DIRK+ERK ARK-pair CheckARKOrder validated against ark_test_butcher.out)
 - [x] arkode_interp_impl.h — committed (Hermite/Lagrange content structs; generic ARKInterp enum lives in arkode_impl.rs)
 - [x] arkode_interp.c — committed (dispatchers take ark_mem only, take/put-back on ark_mem.interp; Hermite quartic/quintic bootstrap recurses on the impl; LBasis family spans full nhist as in C; polynomial-exactness tests)
-- [ ] arkode.c — PART I committed (arkAllocVec/arkFreeVec/arkResizeVec; empty-NVector-as-NULL convention pinned). Remaining: arkCreate/ARKodeEvolve/InitialSetup/arkHin/CompleteStep/etc
-- [ ] arkode_io.c — todo
+- [ ] arkode.c — PARTS I-II committed (vector utils, ARKodeGetDky, arkCreate, arkEwtSetSS/SV/SmallReal + arkRwtSet family with donor in-place idiom; efun=None means internal dispatch). Remaining: arkInit/InitialSetup/ARKodeEvolve/arkHin/CompleteStep/Reset/Resize/Free/predictors/etc
+- [ ] arkode_io.c — PART I committed (ARKodeSetDefaults). Remaining: full Set/Get families, PrintAllStats, WriteParameters, SetOptions CLI
 - [x] arkode_adapt_impl.h — committed (ARKodeHAdaptMem struct + adaptivity constants)
 - [x] arkode_adapt.c — committed (arkAdapt signature drops the always-ark_mem-derived hadapt_mem/ycur args per Addendum C.1; SUNRcopysign added to sundials_math)
 - [x] arkode_root_impl.h — committed (ARKodeRootMem struct, C int*/realtype* arrays -> Vec)

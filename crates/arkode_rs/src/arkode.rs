@@ -163,3 +163,167 @@ pub fn arkResizeVec(
     }
     true
 }
+
+/*---------------------------------------------------------------
+  arkCreate:
+
+  Create and set default values in the ARKodeMem structure. The C
+  routine returns NULL on allocation failure; allocation cannot
+  fail here (and ARKodeSetDefaults cannot fail with no stepper
+  attached), so the memory is returned directly.
+  ---------------------------------------------------------------*/
+pub fn arkCreate(_sunctx: &crate::sundials_context::SUNContext) -> Box<ARKodeMem> {
+    /* C: malloc + memset(0) = ARKodeMem::default() */
+    let mut ark_mem = Box::new(ARKodeMem::default());
+
+    /* Set uround */
+    ark_mem.uround = crate::sundials_types::SUN_UNIT_ROUNDOFF;
+
+    /* The time step module table, rootfinding, constraints and
+    relaxation fields are already NULL/false from Default */
+
+    /* Initialize lrw and liw */
+    ark_mem.lrw = 18;
+    ark_mem.liw = 53; /* fcn/data ptr, int, long int, sunindextype, sunbooleantype */
+
+    /* Allocate step adaptivity structure and note storage */
+    ark_mem.hadapt_mem = Some(crate::arkode_adapt::arkAdaptInit());
+    ark_mem.lrw += crate::arkode_adapt_impl::ARK_ADAPT_LRW;
+    ark_mem.liw += crate::arkode_adapt_impl::ARK_ADAPT_LIW;
+
+    /* Initialize the interpolation structure to NULL */
+    ark_mem.interp = None;
+    ark_mem.interp_type = crate::arkode_impl::ARK_INTERP_HERMITE;
+    ark_mem.interp_degree = ARK_INTERP_MAX_DEGREE;
+
+    /* Initially, rwt should point to ewt */
+    ark_mem.rwt_is_ewt = true;
+
+    /* Indicate that calling the full RHS function is not required, this flag
+    is updated to SUNTRUE by the interpolation module initialization function
+    and/or the stepper initialization function in arkInitialSetup */
+    ark_mem.call_fullrhs = false;
+
+    /* Indicate that the problem needs to be initialized */
+    ark_mem.initsetup = true;
+    ark_mem.init_type = crate::arkode_impl::FIRST_INIT;
+    ark_mem.firststage = true;
+    ark_mem.initialized = false;
+
+    /* Initial step size has not been determined yet */
+    ark_mem.h = ZERO;
+    ark_mem.h0u = ZERO;
+
+    /* Accumulated error estimation strategy */
+    ark_mem.AccumErrorType = crate::arkode_impl::ARK_ACCUMERROR_NONE;
+    ark_mem.AccumError = ZERO;
+
+    /* Default to having stepper initialize ycur during evolution */
+    ark_mem.ensure_ycur = false;
+
+    /* Set default values for integrator and stepper optional inputs
+    (cannot fail: no stepper is attached yet) */
+    let _ = crate::arkode_io::ARKodeSetDefaults(&mut ark_mem);
+
+    ark_mem.load_checkpoint_fail = false;
+    ark_mem.do_adjoint = false;
+
+    ark_mem
+}
+
+/*---------------------------------------------------------------
+  arkRwtSet
+
+  This routine is responsible for setting the residual weight
+  vector rwt (C prototype: (y, weight, data) with data = ark_mem).
+  ---------------------------------------------------------------*/
+pub fn arkRwtSet(ark_mem: &mut ARKodeMem, y: &NVector, weight: &mut NVector) -> i32 {
+    /* return if rwt is just ewt */
+    if ark_mem.rwt_is_ewt {
+        return 0;
+    }
+
+    /* put M*y into ark_tempv1 */
+    if let Some(mmult) = ark_mem.step_mmult {
+        let mut my = std::mem::replace(&mut ark_mem.tempv1, NVector::new(0));
+        let flag = mmult(ark_mem, y, &mut my);
+        ark_mem.tempv1 = my;
+        if flag != ARK_SUCCESS {
+            return crate::arkode_impl::ARK_MASSMULT_FAIL;
+        }
+    } else {
+        /* this condition should not apply, but just in case */
+        crate::nvector_serial::N_VScale(1.0, y, &mut ark_mem.tempv1);
+    }
+
+    /* call appropriate routine to fill rwt */
+    let mut flag = 0;
+    let my = std::mem::replace(&mut ark_mem.tempv1, NVector::new(0));
+    match ark_mem.ritol {
+        crate::arkode_impl::ARK_SS => flag = arkRwtSetSS(ark_mem, &my, weight),
+        crate::arkode_impl::ARK_SV => flag = arkRwtSetSV(ark_mem, &my, weight),
+        _ => {}
+    }
+    ark_mem.tempv1 = my;
+
+    flag
+}
+
+/*---------------------------------------------------------------
+  arkEwtSetSS / arkEwtSetSV / arkEwtSetSmallReal
+
+  Error weight vector routines (C prototype: (ycur, weight,
+  arkode_mem) with arkode_mem = ark_mem for the internal
+  functions). Following the cvode donor idiom, the weight is built
+  in place in `weight` (C stages through tempv1; the element-wise
+  operations are identical).
+  ---------------------------------------------------------------*/
+pub fn arkEwtSetSS(ark_mem: &ARKodeMem, ycur: &NVector, weight: &mut NVector) -> i32 {
+    crate::nvector_serial::N_VAbs(ycur, weight);
+    weight.scale_inplace(ark_mem.reltol);
+    weight.add_const_inplace(ark_mem.Sabstol);
+    if ark_mem.atolmin0 && crate::nvector_serial::N_VMin(weight) <= ZERO {
+        return -1;
+    }
+    weight.invert_inplace();
+    0
+}
+
+pub fn arkEwtSetSV(ark_mem: &ARKodeMem, ycur: &NVector, weight: &mut NVector) -> i32 {
+    crate::nvector_serial::N_VAbs(ycur, weight);
+    weight.linear_sum_with(ark_mem.reltol, 1.0, ark_mem.Vabstol.as_ref().unwrap());
+    if ark_mem.atolmin0 && crate::nvector_serial::N_VMin(weight) <= ZERO {
+        return -1;
+    }
+    weight.invert_inplace();
+    0
+}
+
+pub fn arkEwtSetSmallReal(_ycur: &NVector, weight: &mut NVector) -> i32 {
+    crate::nvector_serial::N_VConst(crate::sundials_types::SUN_SMALL_REAL, weight);
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkRwtSetSS / arkRwtSetSV
+  ---------------------------------------------------------------*/
+pub fn arkRwtSetSS(ark_mem: &ARKodeMem, my: &NVector, weight: &mut NVector) -> i32 {
+    crate::nvector_serial::N_VAbs(my, weight);
+    weight.scale_inplace(ark_mem.reltol);
+    weight.add_const_inplace(ark_mem.SRabstol);
+    if ark_mem.Ratolmin0 && crate::nvector_serial::N_VMin(weight) <= ZERO {
+        return -1;
+    }
+    weight.invert_inplace();
+    0
+}
+
+pub fn arkRwtSetSV(ark_mem: &ARKodeMem, my: &NVector, weight: &mut NVector) -> i32 {
+    crate::nvector_serial::N_VAbs(my, weight);
+    weight.linear_sum_with(ark_mem.reltol, 1.0, ark_mem.VRabstol.as_ref().unwrap());
+    if ark_mem.Ratolmin0 && crate::nvector_serial::N_VMin(weight) <= ZERO {
+        return -1;
+    }
+    weight.invert_inplace();
+    0
+}
