@@ -300,7 +300,9 @@ pub type ARKLinsolSetupFn = fn(
     ark_mem: &mut ARKodeMem,
     convfail: i32,
     tpred: f64,
-    ypred: &NVector,
+    /* &mut: the internal DQ Jacobian perturbs ypred in place and
+       restores it, exactly as the C code perturbs the caller's vector */
+    ypred: &mut NVector,
     fpred: &NVector,
     jcurPtr: &mut bool,
     vtemp1: &mut NVector,
@@ -387,12 +389,20 @@ pub type ARKTimestepAttachLinsolFn = fn(
     lsolve: Option<ARKLinsolSolveFn>,
     lfree: Option<ARKLinsolFreeFn>,
     lsolve_type: SUNLinearSolver_Type,
-    lmem: UserData,
+    lmem: Box<crate::arkode_ls_impl::ARKLsMem>,
 ) -> i32;
 pub type ARKTimestepDisableLSetup = fn(ark_mem: &mut ARKodeMem);
-/// C returns `void*` (the stepper's lin-solver memory); the Rust
-/// stepper lends the slot for the caller to downcast.
-pub type ARKTimestepGetLinMemFn = fn(ark_mem: &mut ARKodeMem) -> Option<&mut UserData>;
+/// C returns `void*` (the stepper's lin-solver memory).  Storage
+/// adaptation (ARCHITECTURE.md Addendum C.1): the box itself lives on
+/// `ARKodeMem.lmem`; this op TAKES it out (take/put-back convention)
+/// and the caller restores it by writing the field.
+pub type ARKTimestepGetLinMemFn =
+    fn(ark_mem: &mut ARKodeMem) -> Option<Box<crate::arkode_ls_impl::ARKLsMem>>;
+/// Rust-only companion op: C's step_getgammas hands out the address of
+/// the stepper's `jcur` flag, through which the ARKLS preconditioner
+/// setup writes; the Rust op copies it out, so this setter carries the
+/// write-back into the stepper.
+pub type ARKTimestepSetJcurFn = fn(ark_mem: &mut ARKodeMem, jcur: bool);
 pub type ARKTimestepGetImplicitRHSFn = fn(ark_mem: &mut ARKodeMem) -> Option<ARKRhsFn>;
 pub type ARKTimestepGetGammasFn = fn(
     ark_mem: &mut ARKodeMem,
@@ -567,8 +577,15 @@ pub struct ARKodeMem {
     pub step_attachlinsol: Option<ARKTimestepAttachLinsolFn>,
     pub step_disablelsetup: Option<ARKTimestepDisableLSetup>,
     pub step_getlinmem: Option<ARKTimestepGetLinMemFn>,
+    pub step_setjcur: Option<ARKTimestepSetJcurFn>,
     pub step_getimplicitrhs: Option<ARKTimestepGetImplicitRHSFn>,
     pub step_getgammas: Option<ARKTimestepGetGammasFn>,
+    /* Storage adaptation (Addendum C.1): C keeps the ARKLS interface
+       memory behind the stepper's `void* lmem`; the box lives here so
+       ARKLS routines avoid a double-nested take/put-back.  The
+       step_getlinmem op above takes it out; put-back writes this
+       field.  None = C NULL. */
+    pub lmem: Option<Box<crate::arkode_ls_impl::ARKLsMem>>,
     pub step_computestate: Option<ARKTimestepComputeState>,
     pub step_setnonlinearsolver: Option<ARKTimestepSetNonlinearSolver>,
     pub step_setlinear: Option<ARKTimestepSetLinear>,
@@ -785,8 +802,10 @@ impl Default for ARKodeMem {
             step_attachlinsol: None,
             step_disablelsetup: None,
             step_getlinmem: None,
+            step_setjcur: None,
             step_getimplicitrhs: None,
             step_getgammas: None,
+            lmem: None,
             step_computestate: None,
             step_setnonlinearsolver: None,
             step_setlinear: None,

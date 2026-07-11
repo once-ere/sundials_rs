@@ -816,8 +816,8 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_erkstep_impl.h — committed (ARKodeERKStepMem; Xvecs pointer array replaced by call-site operand assembly, liw accounting kept; adj_f deferred with the adjoint machinery)
 - [ ] arkode_erkstep.c — PART I committed (ERKStepCreate/ReInit, erkStep Init/FullRHS/TakeStep/Resize/Free/PrintMem, SetButcherTable/CheckButcherTable/ComputeSolutions, ApplyForcing/SetInnerForcing; step_mem take/put-back with release around the FullRHS re-entry). Deferred: TakeStep_Adjoint/fe_Adj/CreateAdjointStepper (ManyVector), RelaxDeltaE (relaxation)
 - [ ] arkode_erkstep_io.c — PART I committed (erkStep SetDefaults/SetOrder/GetNumRhsEvals/GetEstLocalErrors/GetStageIndex/PrintAllStats/WriteParameters + ERKStepSetTable/Num/Name, GetCurrentButcherTable (copy), GetTimestepperStats). Remaining: deprecated ERKStep* wrapper aliases, SetOptions/SetRelaxFn
-- [ ] arkode_ls_impl.h — todo
-- [ ] arkode_ls.c — todo
+- [x] arkode_ls_impl.h — committed (ARKLsMem + fn types + ARKLS_* codes; lmem box hoisted onto ARKodeMem.lmem with take/put-back via the step_getlinmem op — Addendum C.1; ARKLsMassMem deferred with the mass half)
+- [ ] arkode_ls.c — PART I committed: system-matrix half (ARKodeSetLinearSolver + Set*/Get* option-stat families + GetLinReturnFlagName, arkLsDQJac dense/band, arkLsDQJtimes, arkLsLinSys, arkLsInitialize/Setup/Solve/Free; iterative solve via RefCell ATimes/PSolve closures with s1=rwt s2=ewt; psetup jcur write-back via Rust-only step_setjcur op). Remaining: ARKLsMassMem half (ARKodeSetMassLinearSolver, arkLsMass*, arkLsMTimes/MPSetup/MPSolve, mass stats)
 - [ ] arkode_arkstep_impl.h — todo
 - [ ] arkode_arkstep.c — todo
 - [ ] arkode_arkstep_io.c — todo
