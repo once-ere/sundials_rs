@@ -769,7 +769,17 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       sincos fusion in the sin/cos-heavy residual, amplified by the DQ's
       4 extra residual calls per step through the near-tie MIN(dely,
       delp) pick).  See VERIFICATION.md.
-- [ ] idasRoberts_ASAi_dns — todo (fresh; ASA)
+- [x] idasRoberts_ASAi_dns — IDENTICAL (first adjoint example:
+      byte-exact end-to-end validation of idaa.rs + idas_ls PART II —
+      IDAAdjInit(HERMITE), two-phase IDASolveF checkpointing over
+      t=4e10, IDACreateB/InitB/SStolerancesB/UserDataB/MaxNumStepsB,
+      IDASetLinearSolverB + user JacB through the B-wrappers,
+      IDAQuadInitB + backward quadrature error control, IDASolveB with
+      checkpoint replay (IDAAdataStore hot restarts + ownership dance +
+      Hermite interpolation into resB/JacB/rhsQB), IDAGetB/IDAGetQuadB,
+      then IDAReInitB + IDACalcICB + IDAGetConsistentICB and a second
+      backward solve from TB1.  Also exercises IDAWFtolerances (user
+      ewt) and user forward Jac.)
 - [ ] idasAkzoNob_ASAi_dns — todo (fresh; ASA)
 - [ ] idasHessian_ASA_FSA — todo (fresh; 2nd-order ASA+FSA)
 ### excluded (idas) examples

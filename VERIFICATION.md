@@ -125,7 +125,7 @@ cvode example currently hits nli==0; worth fixing for parity/robustness.
 | idasHeat2D_kry | identical |
 | idasHessian_ASA_FSA | todo |
 | idasKrylovDemo_ls | identical (incl. _1/_2 nrmfactor arg variants) |
-| idasRoberts_ASAi_dns | todo |
+| idasRoberts_ASAi_dns | identical |
 | idasRoberts_FSA_dns | identical (shipped stg_t ref; sim_t/sim_f/stg_f/-nosensi byte-identical to local C build, localref committed) |
 | idasRoberts_dns | identical |
 | idasSlCrank_FSA_dns | tolerance-level(stats/G-tail/one dG/dp digit vs local C; FSA dG/dp agrees with the example's own FD checks, FD sections byte-identical to C. The C binary is flag-unstable here: 232 vs 263 steps between -fmath-errno/default builds of the same source (sincos fusion in the DQ-perturbed residual). Exposed+fixed the IDASetSensParams p-copy defect via the pinned FSAUserData convention — see ARCHITECTURE.md §3.6) |
