@@ -621,15 +621,53 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       idaLsSolveIterative.  4 tests: donor's needs-lmem + DQ-Jacobian/
       solve round-trip, new ReInit reset check, new NO_ADJ guards for
       the B entry points.  Gate green 2026-07-11 (19 idas_rs tests).)
-- [ ] idaa.c — todo (REORDERED before idas_cli.c 2026-07-11: the cli
-      key tables reference IDAAdjSetNoSensi / IDASetMaxOrdB /
-      IDASStolerancesB etc., which live in idaa.c/idaa_io.c — porting
-      cli first would bank another uncompilable file.  Structural donor
-      crates/cvodes_rs/src/cvodea.rs.  Binding pins to satisfy: replace
-      idaLsGetY unreachable! in idas_ls.rs with ia_interpType dispatch
-      to IDAAhermiteGetY/IDAApolynomialGetY; install the OUTER IDAMem as
-      each backward problem's inner UserData (the idas_ls.rs and
-      idas_bbdpre.rs PART II wrappers depend on it).)
+- [x] idaa.c — done → `crates/idas_rs/src/idaa.rs` (~2900 lines; ported
+      2026-07-11 following the cvodea.rs pinned modeling.  BOTH standing
+      adjoint pins SATISFIED: (1) idas_ls.rs idaLsGetY unreachable!
+      replaced by crate::idaa::IDAAgetY — the ia_interpType dispatch to
+      IDAAhermiteGetY/IDAApolynomialGetY that also serves the
+      idas_bbdpre wrappers; (2) IDASolveB/IDACalcICB(S) install the
+      OUTER IDAMem as the nested backward problem's ida_user_data
+      transiently around each IDASolve/IDACalcIC call (ownership dance,
+      idaa_integrate_backward / idaa_calc_ic_backward), which the
+      idas_ls.rs and idas_bbdpre.rs PART II wrappers downcast back out.
+      Modeling: ck list → Vec (index 0 = initial ckpnt, last = most
+      recent, ck_next walk = idx-1); backward problems → Vec in creation
+      order (ida_index == position; C-reverse traversals run forward —
+      problems independent); ia_malloc/free/storePnt/getY fn pointers →
+      interpType dispatch (frees are RAII: ckpnt delete, bckpb delete,
+      dataFree, hermite/polynomial free all vanish into Drop);
+      ia_Y/ia_YS = OWNED scratch allocated in IDASolveF (C aliases
+      phi/phiS rows; every use overwrites before reading — pinned as
+      cvodea.rs ca_Y).  Exported: IDAAdjInit/ReInit/Free, IDASolveF
+      (root-return caching, tstop replay, ckpnt every nsteps +
+      forceSetup), IDACreateB (nested IDACreate + ida_Ns copy),
+      IDAInitB/BS, IDAReInitB, IDASStolerancesB/SV, IDAQuadSS/SV-
+      tolerancesB, IDAQuadInitB/BS/ReInitB, IDACalcICB/BS (noInterp
+      gate + yyTmp/ypTmp(+S) preload), IDASolveB (ckpnt scan +
+      IDAAdataStore second forward pass + per-problem active logic),
+      IDAGetB, IDAGetQuadB (nst==0 → phiQ[0]), IDAGetAdjY.  Private:
+      ckpntInit/New/AllocVectors/CopyVectors (fused ScaleVectorArray
+      copies → N_VScale loops), dataStore (yyTmp/ypTmp detached around
+      the ONE_STEP replay), ckpntGet (adjoint detached; idx==0 →
+      SetInitStep(h0u)+ReInits, else scalar/array copy + forceSetup),
+      hermite + polynomial malloc/storePnt/getY (fused
+      LinearCombination(+VectorArray) kernels expanded to elementwise
+      accumulation loops per the IDAGetSolution idiom; polynomial DD
+      update via split_at_mut in-place linear_sum_with), GettnSolutionYp
+      /YpS, findIndex (ilast i64), IDAAres/IDAArhsQ (forward-callback-
+      typed; interpSensi branches; yyTmp/ypTmp(+S) taken as owned locals
+      around user calls; MSGAM_BAD_TINTERP via ida_msg_g).  Deviation
+      notes: IDASolveF earlyret bool+flag → Option<i32> (C discards the
+      root-branch IDAGetSolution flag — preserved); MSGAM_BAD_TB0/
+      BAD_TBOUT C varargs index has no %d conversion — not printed,
+      plain message kept; the IDASolveB back-error message formats the
+      problem index inline (cvodea.rs precedent).  3 tests: AdjInit
+      validation/state + ReInit/Free, CreateB indices + which checks +
+      NO_MALLOC-before-InitB + tolerance propagation + NO_FWD, InitB
+      BAD_TB0 + workspace init.  Gate green 2026-07-11 (22 idas_rs
+      tests).  ASA numerics verification lands with the idas serial
+      examples (idasRoberts_ASAi_dns etc.).)
 - [ ] idaa_io.c — todo
 - [ ] idas_cli.c — todo (after idaa_io.c; donor ida_cli.rs + quad/sens/
       B-setter key tables incl. twoint/int-real/int-real-real/int-long

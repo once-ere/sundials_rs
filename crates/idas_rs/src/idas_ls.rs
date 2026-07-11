@@ -2562,6 +2562,9 @@ pub fn idaLsFreeB(idaB_mem: &mut IDABMem) -> i32 {
    with the real dispatch, mirroring cvodes_ls.rs cvLsIMget
    (PROGRESS.md pin on the idas_ls.c entry). */
 #[allow(unused_variables)]
+/* (C: IDAADJ_mem->ia_getY — the ia_interpType dispatch to
+   IDAAhermiteGetY / IDAApolynomialGetY lives in idaa.rs::IDAAgetY,
+   per the recorded PIN; empty yyS/ypS Vecs play the C NULL inputs.) */
 pub(crate) fn idaLsGetY(
     ida_mem: &mut IDAMem,
     t: f64,
@@ -2570,7 +2573,7 @@ pub(crate) fn idaLsGetY(
     yyS: &mut Vec<NVector>,
     ypS: &mut Vec<NVector>,
 ) -> i32 {
-    unreachable!("idaLsGetY: interpolation dispatch is supplied by the idaa.c port (idaa.rs)")
+    crate::idaa::IDAAgetY(ida_mem, t, yy, yp, yyS, ypS)
 }
 
 /* Downcast the IDAB_mem.ida_lmem Box<dyn Any> attachment to the
