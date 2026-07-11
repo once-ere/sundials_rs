@@ -780,7 +780,10 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       then IDAReInitB + IDACalcICB + IDAGetConsistentICB and a second
       backward solve from TB1.  Also exercises IDAWFtolerances (user
       ewt) and user forward Jac.)
-- [ ] idasAkzoNob_ASAi_dns — todo (fresh; ASA)
+- [x] idasAkzoNob_ASAi_dns — LOCAL-C (byte-identical to the local C
+      build; shipped .out is stale — missing the trailing space the
+      current C `%24.16f \n` prints and a blank line.  Second adjoint
+      validation: dG/dy0 w.r.t. initial conditions, stiff 6-eq DAE.)
 - [ ] idasHessian_ASA_FSA — todo (fresh; 2nd-order ASA+FSA)
 ### excluded (idas) examples
 idasRoberts_klu, idasRoberts_sps, idasRoberts_ASAi_klu, idasRoberts_ASAi_sps,

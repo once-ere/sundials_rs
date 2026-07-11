@@ -40,3 +40,6 @@ name = "idasSlCrank_FSA_dns"
 
 [[example]]
 name = "idasRoberts_ASAi_dns"
+
+[[example]]
+name = "idasAkzoNob_ASAi_dns"
