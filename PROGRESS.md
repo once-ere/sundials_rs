@@ -515,16 +515,13 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
   detach y/yp/r/weight via take; tmp vectors = ida_tempv1/2/3).
   IDAS deltas vs donor:
   * IDAGetLinWorkSpace: `*leniwLS = 34` (IDAS C; donor IDA counts 33).
-  * Three ida_bbdpre dispatch points deferred until the idas_bbdpre units
-    land, written variant-agnostically so they stay correct when the
-    PrecModule::BBDPre variant is added: (1) idaLsInitialize
-    setup_disabled uses `matches!(prec_module, None | User)` for the
-    donor's !BBDPre clause; (2) idaLsSetup psetup branch uses
-    `!matches!(prec_module, None | User)`; (3) idaLsPSetup has the
-    user-pset-only body and idaLsSolveIterative drops the bbd psolve arm
-    (PIN: idas_bbdpre.c must add the IDABBDPrecSetup arm to idaLsPSetup
-    and the IDABBDPrecSolve arm + has_psolve contribution to
-    idaLsSolveIterative).
+  * Three ida_bbdpre dispatch points (PIN SATISFIED by the idas_bbdpre
+    unit 2026-07-11): (1)/(2) idaLsInitialize setup_disabled and the
+    idaLsSetup psetup branch were written variant-agnostically
+    (`matches!(prec_module, None | User)` / negation) and needed no
+    edit; (3) idaLsPSetup carries the IDABBDPrecSetup arm and
+    idaLsSolveIterative the IDABBDPrecSolve psolve arm + has_psolve
+    contribution (both donor-verbatim from ida_ls.rs).
   PART II (backward): full port following the pinned cvodes_ls.rs design —
   wrappers are forward-callback-typed fns whose &mut UserData downcasts to
   the OUTER IDAMem (idaLs_AccessIDAMem); IDAB_mem.ida_lmem holds
@@ -539,7 +536,9 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
   ***PIN (idaa.c unit): idaLsGetY is a forward-reference bridge whose body
   is `unreachable!` — statically unreachable until idaa.rs can construct an
   IDAadjMem — and MUST be replaced with the ia_interpType dispatch to
-  IDAAhermiteGetY / IDAApolynomialGetY, mirroring cvodes_ls.rs cvLsIMget.***
+  IDAAhermiteGetY / IDAApolynomialGetY, mirroring cvodes_ls.rs cvLsIMget.
+  (Now pub(crate): the idas_bbdpre.rs IDAAglocal/IDAAgcomm wrappers call
+  the same bridge, so the one replacement fixes both modules.)***
   Tests: donor's 6 carried (defaults, direct-needs-matrix, dense DQ
   Jacobian, direct solve round-trip incl. cjratio scaling, DQ Jtimes vs
   analytic, flag names) + new backward_set_routines_require_adjoint
@@ -597,8 +596,31 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       manual_range_contains). Full gate green 2026-07-11: check + clippy
       -D warnings (core+idas) + workspace build + workspace tests (15
       idas_rs tests: 8 prior + 7 new NLS).
-- [ ] idas_bbdpre_impl.h — todo
-- [ ] idas_bbdpre.c — todo
+- [x] idas_bbdpre_impl.h — done → `crates/idas_rs/src/idas_bbdpre_impl.rs`
+      (donor ida_bbdpre_impl.rs + backward additions: IDABBDLocalFnB /
+      IDABBDCommFnB callback types (idas_bbdpre.h) and IDABBDPrecDataB
+      {glocalB, gcommB} stored behind IDAB_mem.ida_pmem via dyn Any —
+      the C ida_pfree hook is Rust Drop.  MSGBBD_AMEM_NULL /
+      MSGBBD_PDATAB_NULL are unused in the C 7.7.0 sources and not
+      carried.)
+- [x] idas_bbdpre.c — done → `crates/idas_rs/src/idas_bbdpre.rs`
+      (PART I donor-verbatim from verified ida_bbdpre.rs — serial
+      single-block reduction, zlocal/rlocal copy in/out, PrecModule::
+      BBDPre(Box<IBBDPrecData>) installed by IDABBDPrecInit.  PART II
+      per the idas_ls.rs pinned design: IDABBDPrecInitB/ReInitB check
+      adjMallocDone/which then delegate to the forward routines on
+      IDAB_mem.IDA_mem with IDAAglocal/IDAAgcomm installed as the inner
+      glocal/gcomm (C malloc-failure branch vanishes); the wrappers are
+      forward-callback-typed, downcast &mut UserData to the OUTER IDAMem
+      (idaLs_AccessIDAMem), read ia_bckpbCrt + pmem downcast, and take
+      ia_yyTmp/ia_ypTmp as owned locals around the user call under the
+      ia_noInterp gate (interp via the shared idaLsGetY bridge, now
+      pub(crate) — see the idaa.c PIN).  idas_ls integration landed per
+      PIN: PrecModule::BBDPre variant in idas_ls_impl.rs, IDABBDPrecSetup
+      arm in idaLsPSetup, IDABBDPrecSolve arm + has_psolve in
+      idaLsSolveIterative.  4 tests: donor's needs-lmem + DQ-Jacobian/
+      solve round-trip, new ReInit reset check, new NO_ADJ guards for
+      the B entry points.  Gate green 2026-07-11 (19 idas_rs tests).)
 - [ ] idas_cli.c — todo
 - [ ] idaa.c — todo
 - [ ] idaa_io.c — todo

@@ -26,6 +26,7 @@
  * -----------------------------------------------------------------*/
 use std::cell::RefCell;
 
+use crate::idas_bbdpre::{IDABBDPrecSetup, IDABBDPrecSolve};
 use crate::idas_impl::*;
 use crate::idas_ls_impl::*;
 use crate::nvector_serial::*;
@@ -690,19 +691,30 @@ pub fn idaLsPSetup(
     ypcur: &NVector,
     rcur: &NVector,
 ) -> i32 {
-    let IDALsMem { pset, npe, .. } = idals_mem;
-    if let Some(pset) = *pset {
-        /* Call user pset routine to update preconditioner. ida_ewt /
-           ida_hh are handed in directly: they are what a C user pset
-           fetches via IDAGetErrWeights / IDAGetCurrentStep (see
-           IDALsPrecSetupFn note). */
-        let IDAMem { ida_tn, ida_cj, ida_ewt, ida_hh, ida_user_data, .. } = ida_mem;
-        let retval =
-            pset(*ida_tn, ycur, ypcur, rcur, *ida_cj, ida_ewt, *ida_hh, ida_user_data);
-        *npe += 1;
-        retval
-    } else {
-        0
+    let IDALsMem { pset, prec_module, npe, .. } = idals_mem;
+    match prec_module {
+        /* internal idas_bbdpre module (C pset = IDABBDPrecSetup) */
+        PrecModule::BBDPre(pdata) => {
+            let (tn, cj) = (ida_mem.ida_tn, ida_mem.ida_cj);
+            let retval = IDABBDPrecSetup(ida_mem, pdata, tn, cj, ycur, ypcur);
+            *npe += 1;
+            retval
+        }
+        _ => {
+            if let Some(pset) = *pset {
+                /* Call user pset routine to update preconditioner. ida_ewt /
+                   ida_hh are handed in directly: they are what a C user pset
+                   fetches via IDAGetErrWeights / IDAGetCurrentStep (see
+                   IDALsPrecSetupFn note). */
+                let IDAMem { ida_tn, ida_cj, ida_ewt, ida_hh, ida_user_data, .. } = ida_mem;
+                let retval =
+                    pset(*ida_tn, ycur, ypcur, rcur, *ida_cj, ida_ewt, *ida_hh, ida_user_data);
+                *npe += 1;
+                retval
+            } else {
+                0
+            }
+        }
     }
 }
 
@@ -1447,10 +1459,7 @@ pub fn idaLsSolve(
    doubles as the (read-only) scaling vectors s1 = s2 and as the ewt
    used by the DQ Jv sigma (in C the DQ routine reads
    IDA_mem->ida_ewt, which is that same vector at every call site —
-   idaNlsLSolve and IDACalcIC both pass ida_ewt as the weight).
-   (The donor's ida_bbdpre psolve dispatch — PrecModule::BBDPre
-   payload + IDABBDPrecSolve arm and its has_psolve contribution —
-   lands with the idas_bbdpre units.) */
+   idaNlsLSolve and IDACalcIC both pass ida_ewt as the weight). */
 #[allow(clippy::too_many_arguments)]
 fn idaLsSolveIterative(
     ida_mem: &mut IDAMem,
@@ -1477,6 +1486,7 @@ fn idaLsSolveIterative(
         psolve,
         nrmfac,
         dqincfac,
+        prec_module,
         ..
     } = idals_mem;
     let jtimes = *jtimes;
@@ -1486,10 +1496,17 @@ fn idaLsSolveIterative(
     let nrmfac = *nrmfac;
     let dqincfac = *dqincfac;
 
+    /* The internal idas_bbdpre module dispatches its psolve through the
+       PrecModule payload rather than a psolve fn pointer. */
+    let mut bbd_pdata = match prec_module {
+        PrecModule::BBDPre(p) => Some(&mut **p),
+        _ => None,
+    };
+
     /* In C, PSolve is registered with the LS only when a non-NULL
-       psolve was supplied (IDASetPreconditioner); the idas_bbdpre
-       IDABBDPrecSolve registration is added when that module lands. */
-    let has_psolve = psolve_fn.is_some();
+       psolve was supplied (IDASetPreconditioner), or the idas_bbdpre
+       module installed IDABBDPrecSolve. */
+    let has_psolve = psolve_fn.is_some() || bbd_pdata.is_some();
 
     let idam = RefCell::new(&mut *ida_mem);
 
@@ -1518,6 +1535,9 @@ fn idaLsSolveIterative(
         let ret = if let Some(ps) = psolve_fn {
             let IDAMem { ida_tn, ida_cj, ida_user_data, .. } = imr;
             ps(*ida_tn, ycur, ypcur, rescur, r, z, *ida_cj, ptol, ida_user_data)
+        } else if let Some(pdata) = bbd_pdata.as_deref_mut() {
+            /* internal idas_bbdpre module (C psolve = IDABBDPrecSolve) */
+            IDABBDPrecSolve(pdata, r, z)
         } else {
             0
         };
@@ -2542,7 +2562,7 @@ pub fn idaLsFreeB(idaB_mem: &mut IDABMem) -> i32 {
    with the real dispatch, mirroring cvodes_ls.rs cvLsIMget
    (PROGRESS.md pin on the idas_ls.c entry). */
 #[allow(unused_variables)]
-fn idaLsGetY(
+pub(crate) fn idaLsGetY(
     ida_mem: &mut IDAMem,
     t: f64,
     yy: &mut NVector,
@@ -2563,7 +2583,7 @@ fn idaLsB_downcast(idaB_mem: &mut IDABMem) -> &mut IDALsMemB {
 /* Recover the OUTER integrator memory from the inner (backward)
    problem's UserData (installed by idaa.rs, as the C idaa.c passes
    the outer ida_mem as the inner problem's user data). */
-fn idaLs_AccessIDAMem<'a>(
+pub(crate) fn idaLs_AccessIDAMem<'a>(
     ida_mem: &'a mut UserData,
     fname: &str,
 ) -> Result<&'a mut IDAMem, i32> {

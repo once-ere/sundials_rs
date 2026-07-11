@@ -74,6 +74,8 @@ pub use sundials_core::sunnonlinsol_fixedpoint;
 
 // IDAS proper (modules land phase by phase; see ../../PROGRESS.md)
 pub mod idas;
+pub mod idas_bbdpre;
+pub mod idas_bbdpre_impl;
 pub mod idas_ic;
 pub mod idas_impl;
 pub mod idas_io;
@@ -85,6 +87,8 @@ pub mod idas_nls_stg;
 
 // Flat prelude so examples can `use idas_rs::*;` like a C `#include`.
 pub use crate::idas::*;
+pub use crate::idas_bbdpre::*;
+pub use crate::idas_bbdpre_impl::*;
 pub use crate::idas_ic::*;
 pub use crate::idas_impl::*;
 pub use crate::idas_io::*;

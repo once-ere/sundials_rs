@@ -111,10 +111,10 @@ pub enum PrecModule {
     None,
     /// user-supplied pset/psolve get user_data
     User,
-    /* The BBDPre(Box<crate::idas_bbdpre_impl::IBBDPrecData>) variant
-       lands with the idas_bbdpre_impl.h / idas_bbdpre.c units (see
-       PROGRESS.md), mirroring the donor's ida_bbdpre variant and the
-       LsModule::Ls placeholder precedent in idas_impl.rs. */
+    /// internal idas_bbdpre module (C pdata = IBBDPrecData, with
+    /// pset/psolve = IDABBDPrecSetup/IDABBDPrecSolve), mirroring the
+    /// donor's ida_bbdpre variant
+    BBDPre(Box<crate::idas_bbdpre_impl::IBBDPrecData>),
 }
 
 /* -----------------------------------------------------------------
