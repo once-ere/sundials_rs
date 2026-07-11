@@ -123,7 +123,7 @@ cvode example currently hits nli==0; worth fixing for parity/robustness.
 | idasFoodWeb_bnd | local-C(byte-identical stdout to local C 7.7.0 -ffp-contract=off build; shipped .out foreign-libm, last-digit h drift at t≥0.7 — same signature as idaFoodWeb_bnd) |
 | idasHeat2D_bnd | identical |
 | idasHeat2D_kry | identical |
-| idasHessian_ASA_FSA | todo |
+| idasHessian_ASA_FSA | identical |
 | idasKrylovDemo_ls | identical (incl. _1/_2 nrmfactor arg variants) |
 | idasRoberts_ASAi_dns | identical |
 | idasRoberts_FSA_dns | identical (shipped stg_t ref; sim_t/sim_f/stg_f/-nosensi byte-identical to local C build, localref committed) |

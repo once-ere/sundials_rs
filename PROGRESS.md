@@ -784,7 +784,17 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       build; shipped .out is stale — missing the trailing space the
       current C `%24.16f \n` prints and a blank line.  Second adjoint
       validation: dG/dy0 w.r.t. initial conditions, stiff 6-eq DAE.)
-- [ ] idasHessian_ASA_FSA — todo (fresh; 2nd-order ASA+FSA)
+- [x] idasHessian_ASA_FSA — IDENTICAL (2nd-order adjoint byte-exact:
+      SIMULTANEOUS FSA forward with analytic resS/rhsQS + quad-sens
+      error control, then TWO sensitivity-dependent backward problems
+      via IDAInitBS/IDAQuadInitBS — exercises the BS wrappers and the
+      Hermite SENSITIVITY interpolation (ia_interpSensi path,
+      yySTmp/ypSTmp) — plus the FD verification reruns.
+      *** PHASE 5 COMPLETE: library + all 13 serial examples verified
+      (9 identical incl. arg variants, 2 local-C, 2 last-digit/
+      tolerance-level — both root-caused to C-binary sincos fusion).
+      Next: Phase 6 (arkode), starting with the deferred Phase-1 core
+      files (sundials_stepper etc., see the Phase 1 section). ***
 ### excluded (idas) examples
 idasRoberts_klu, idasRoberts_sps, idasRoberts_ASAi_klu, idasRoberts_ASAi_sps,
 idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)

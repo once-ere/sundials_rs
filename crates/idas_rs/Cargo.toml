@@ -43,3 +43,6 @@ name = "idasRoberts_ASAi_dns"
 
 [[example]]
 name = "idasAkzoNob_ASAi_dns"
+
+[[example]]
+name = "idasHessian_ASA_FSA"
