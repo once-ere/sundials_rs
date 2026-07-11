@@ -10,3 +10,15 @@ sundials_core = { path = "../sundials_core" }
 
 [[example]]
 name = "idasRoberts_dns"
+
+[[example]]
+name = "idasHeat2D_bnd"
+
+[[example]]
+name = "idasHeat2D_kry"
+
+[[example]]
+name = "idasFoodWeb_bnd"
+
+[[example]]
+name = "idasKrylovDemo_ls"
