@@ -11,6 +11,12 @@ no LAPACK/KLU) in the session scratchpad; every serial example's local output
 is saved under `<scratchpad>/localref/`. All `local-C` statuses below were
 re-confirmed byte-for-byte against those binaries on this machine.
 
+2026-07-11: that scratchpad did not survive; the C library was rebuilt with
+the same configuration and the local outputs now live in the COMMITTED
+`localref/` tree at the workspace root (currently idas/serial only —
+regenerate other solvers there if a new local-C comparison is needed).
+`tools/verify_examples.sh` defaults to it (`SUNDIALS_LOCALREF` overrides).
+
 ## cvode_rs (donor; re-verified in workspace 2026-07-03)
 
 | example | status |
@@ -114,14 +120,14 @@ cvode example currently hits nli==0; worth fixing for parity/robustness.
 | idasAkzoNob_ASAi_dns | todo |
 | idasAkzoNob_dns | todo |
 | idasAnalytic_mels | todo |
-| idasFoodWeb_bnd | todo |
-| idasHeat2D_bnd | todo |
-| idasHeat2D_kry | todo |
+| idasFoodWeb_bnd | local-C(byte-identical stdout to local C 7.7.0 -ffp-contract=off build; shipped .out foreign-libm, last-digit h drift at t≥0.7 — same signature as idaFoodWeb_bnd) |
+| idasHeat2D_bnd | identical |
+| idasHeat2D_kry | identical |
 | idasHessian_ASA_FSA | todo |
-| idasKrylovDemo_ls | todo |
+| idasKrylovDemo_ls | identical |
 | idasRoberts_ASAi_dns | todo |
 | idasRoberts_FSA_dns | todo |
-| idasRoberts_dns | todo |
+| idasRoberts_dns | identical |
 | idasSlCrank_FSA_dns | todo |
 | idasSlCrank_dns | todo |
 | idasRoberts_klu / _sps / _ASAi_klu / _ASAi_sps / _FSA_klu / _FSA_sps | excluded(KLU/SuperLU) |

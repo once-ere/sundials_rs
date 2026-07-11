@@ -708,11 +708,16 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       the idas.c driver + idas_nls + idas_ls + rootfinding end to end.
       lib.rs prelude gained the sunnonlinsol_newton/fixedpoint
       re-exports the examples need, matching ida_rs.)
-- [ ] idasAnalytic_mels — todo (donor idaAnalytic_mels.rs)
-- [ ] idasHeat2D_bnd — todo (donor idaHeat2D_bnd.rs)
-- [ ] idasHeat2D_kry — todo (donor idaHeat2D_kry.rs)
-- [ ] idasFoodWeb_bnd — todo (donor idaFoodWeb_bnd.rs)
-- [ ] idasKrylovDemo_ls — todo (donor idaKrylovDemo_ls.rs)
+- [ ] idasAnalytic_mels — todo (donor idaAnalytic_mels.rs; IDAS adds
+      reltol/abstol header lines + IDAGetActualInitStep h0 output)
+- [x] idasHeat2D_bnd — IDENTICAL (donor + header-indent deltas)
+- [x] idasHeat2D_kry — IDENTICAL (donor + header-indent deltas)
+- [x] idasFoodWeb_bnd — LOCAL-C (byte-identical to the local C build;
+      shipped .out foreign-libm last-digit h drift at t>=0.7, same
+      signature as the Phase 4 idaFoodWeb_bnd case.  The local C
+      reference tree was REBUILT 2026-07-11 and now lives COMMITTED at
+      localref/ — verify_examples.sh defaults to it.)
+- [x] idasKrylovDemo_ls — IDENTICAL (donor + header-indent deltas)
 - [ ] idasSlCrank_dns — todo (donor idaSlCrank_dns.rs)
 - [ ] idasAkzoNob_dns — todo (fresh port)
 - [ ] idasRoberts_FSA_dns — todo (fresh; FSA — settle the

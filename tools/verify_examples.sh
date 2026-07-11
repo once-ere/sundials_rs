@@ -11,7 +11,10 @@ REFROOT="../sundials-7.7.0/examples"
 # Optional second reference tree: outputs of the locally-built C library
 # (same layout as $REFROOT). When a run differs from the shipped .out but
 # matches the local C build byte-for-byte, report LOCAL-C instead of DIFF.
-LOCALREF="${SUNDIALS_LOCALREF:-/private/tmp/claude-501/-Users-nsh-Developer-code-rust-cvode/bd673a25-b3e9-4e34-b640-b551e1852c17/scratchpad/localref}"
+# The committed localref/ tree holds these outputs (Release,
+# -ffp-contract=off, no LAPACK/KLU — see VERIFICATION.md); earlier
+# sessions kept them in an ephemeral scratchpad, which did not survive.
+LOCALREF="${SUNDIALS_LOCALREF:-localref}"
 mkdir -p logs
 : > logs/summary.txt
 
