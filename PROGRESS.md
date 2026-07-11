@@ -702,6 +702,25 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       compiled; remaining Phase 5 work = idas serial examples
       (idasRoberts_dns etc., incl. FSA/ASA verification and the
       FSA-verification watch items). ***
+### idas examples (Phase 5 verification)
+- [x] idasRoberts_dns — IDENTICAL (donor idaRoberts_dns.rs; deltas: csv
+      filename, two header lines.  First idas example run — validates
+      the idas.c driver + idas_nls + idas_ls + rootfinding end to end.
+      lib.rs prelude gained the sunnonlinsol_newton/fixedpoint
+      re-exports the examples need, matching ida_rs.)
+- [ ] idasAnalytic_mels — todo (donor idaAnalytic_mels.rs)
+- [ ] idasHeat2D_bnd — todo (donor idaHeat2D_bnd.rs)
+- [ ] idasHeat2D_kry — todo (donor idaHeat2D_kry.rs)
+- [ ] idasFoodWeb_bnd — todo (donor idaFoodWeb_bnd.rs)
+- [ ] idasKrylovDemo_ls — todo (donor idaKrylovDemo_ls.rs)
+- [ ] idasSlCrank_dns — todo (donor idaSlCrank_dns.rs)
+- [ ] idasAkzoNob_dns — todo (fresh port)
+- [ ] idasRoberts_FSA_dns — todo (fresh; FSA — settle the
+      FSA-verification watch items here)
+- [ ] idasSlCrank_FSA_dns — todo (fresh; FSA)
+- [ ] idasRoberts_ASAi_dns — todo (fresh; ASA)
+- [ ] idasAkzoNob_ASAi_dns — todo (fresh; ASA)
+- [ ] idasHessian_ASA_FSA — todo (fresh; 2nd-order ASA+FSA)
 ### excluded (idas) examples
 idasRoberts_klu, idasRoberts_sps, idasRoberts_ASAi_klu, idasRoberts_ASAi_sps,
 idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)

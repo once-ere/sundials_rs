@@ -3,7 +3,10 @@ name = "idas_rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure-Rust, memory-safe translation of idas v7.7.0 (SUNDIALS) — port pending"
+description = "Pure-Rust, memory-safe translation of idas v7.7.0 (SUNDIALS)"
 
 [dependencies]
 sundials_core = { path = "../sundials_core" }
+
+[[example]]
+name = "idasRoberts_dns"

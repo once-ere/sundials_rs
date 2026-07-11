@@ -121,3 +121,5 @@ pub use crate::sunlinsol_sptfqmr::*;
 pub use crate::sunmatrix_band::*;
 pub use crate::sunmatrix_dense::*;
 pub use crate::sunmatrix_sparse::*;
+pub use crate::sunnonlinsol_fixedpoint::*;
+pub use crate::sunnonlinsol_newton::*;
