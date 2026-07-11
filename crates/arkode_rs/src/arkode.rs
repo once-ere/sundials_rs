@@ -567,6 +567,253 @@ pub fn arkFreeVectors(ark_mem: &mut ARKodeMem) {
     }
 }
 
+/*---------------------------------------------------------------
+  ark_efun_apply_yn:
+
+  Dispatch point for C calls `ark_mem->efun(ark_mem->yn, w,
+  ark_mem->e_data)`: a user efun receives user_data (C sets
+  e_data = user_data), the internal path branches on itol
+  (C installs arkEwtSetSS/SV with e_data = ark_mem).
+  ---------------------------------------------------------------*/
+pub(crate) fn ark_efun_apply_yn(ark_mem: &mut ARKodeMem, w: &mut NVector) -> i32 {
+    if ark_mem.user_efun {
+        let efun = ark_mem.efun.unwrap();
+        efun(&ark_mem.yn, w, &mut ark_mem.user_data)
+    } else {
+        match ark_mem.itol {
+            crate::arkode_impl::ARK_SS => arkEwtSetSS(ark_mem, &ark_mem.yn, w),
+            crate::arkode_impl::ARK_SV => arkEwtSetSV(ark_mem, &ark_mem.yn, w),
+            _ => -1,
+        }
+    }
+}
+
+/*---------------------------------------------------------------
+  arkHin
+
+  This routine computes a tentative initial step size h0.  If
+  tout is too close to tn (= t0), then arkHin returns
+  ARK_TOO_CLOSE and h remains uninitialized (the caller checks
+  the distance first).  Otherwise it sets ark_mem->h and returns
+  ARK_SUCCESS (see the C source for the full algorithm notes).
+  ---------------------------------------------------------------*/
+pub fn arkHin(ark_mem: &mut ARKodeMem, tout: f64) -> i32 {
+    use crate::arkode_impl::{
+        ARK_FULLRHS_START, ARK_REPTD_RHSFUNC_ERR, ARK_RHSFUNC_FAIL, H0_BIAS, H0_ITERS,
+        H0_LBFACTOR, HALF, TWO,
+    };
+    use crate::sundials_math::{SUNMAX, SUNRsqrt};
+
+    /* arkInitialSetup checks for tdiff = 0 or < 2 * troundoff */
+    let tdiff = tout - ark_mem.tcur;
+    let sign = if tdiff > ZERO { 1 } else { -1 };
+    let tdist = SUNRabs(tdiff);
+    let tround = ark_mem.uround * SUNMAX(SUNRabs(ark_mem.tcur), SUNRabs(tout));
+
+    /* call full RHS if needed */
+    if !ark_mem.fn_is_current {
+        /* NOTE: The step size (h) is used in setting the tolerance in a
+        potential mass matrix solve when computing the full RHS. Before
+        calling arkHin, h is set to |tout - tcur| or 1 and so we do not need
+        to guard against h == 0 here before calling the full RHS. */
+        let retval =
+            crate::arkode_impl::ark_step_fullrhs_yn_fn(ark_mem, ark_mem.tn, ARK_FULLRHS_START);
+        if retval != 0 {
+            return ARK_RHSFUNC_FAIL;
+        }
+        ark_mem.fn_is_current = true;
+    }
+
+    /* Set lower and upper bounds on h0, and take geometric mean
+    as first trial value.
+    Exit with this value if the bounds cross each other. */
+    let hlb = H0_LBFACTOR * tround;
+    let hub = arkUpperBoundH0(ark_mem, tdist);
+
+    let mut hg = SUNRsqrt(hlb * hub);
+
+    if hub < hlb {
+        if sign == -1 {
+            ark_mem.h = -hg;
+        } else {
+            ark_mem.h = hg;
+        }
+        return ARK_SUCCESS;
+    }
+
+    /* Outer loop */
+    let mut hs = hg; /* safeguard against 'uninitialized variable' warning */
+    let mut hnew = hs;
+    let mut yddnrm = 0.0;
+    let mut count1 = 1;
+    while count1 <= H0_ITERS {
+        /* Attempts to estimate ydd */
+        let mut hg_ok = false;
+
+        for _count2 in 1..=H0_ITERS {
+            let hgs = hg * sign as f64;
+            let retval = arkYddNorm(ark_mem, hgs, &mut yddnrm);
+            /* If f() failed unrecoverably, give up */
+            if retval < 0 {
+                return ARK_RHSFUNC_FAIL;
+            }
+            /* If successful, we can use ydd */
+            if retval == ARK_SUCCESS {
+                hg_ok = true;
+                break;
+            }
+            /* f() failed recoverably; cut step size and test it again */
+            hg *= 0.2;
+        }
+
+        /* If f() failed recoverably H0_ITERS times */
+        if !hg_ok {
+            /* Exit if this is the first or second pass. No recovery possible */
+            if count1 <= 2 {
+                return ARK_REPTD_RHSFUNC_ERR;
+            }
+            /* We have a fall-back option. The value hs is a previous hnew
+            which passed through f(). Use it and break */
+            hnew = hs;
+            break;
+        }
+
+        /* The proposed step size is feasible. Save it. */
+        hs = hg;
+
+        /* Propose new step size */
+        hnew = if yddnrm * hub * hub > TWO {
+            SUNRsqrt(TWO / yddnrm)
+        } else {
+            SUNRsqrt(hg * hub)
+        };
+
+        /* If last pass, stop now with hnew */
+        if count1 == H0_ITERS {
+            break;
+        }
+
+        let hrat = hnew / hg;
+
+        /* Accept hnew if it does not differ from hg by more than a factor of
+        2 */
+        if (hrat > HALF) && (hrat < TWO) {
+            break;
+        }
+
+        /* After one pass, if ydd seems to be bad, use fall-back value. */
+        if (count1 > 1) && (hrat > TWO) {
+            hnew = hg;
+            break;
+        }
+
+        /* Send this value back through f() */
+        hg = hnew;
+        count1 += 1;
+    }
+
+    /* Apply bounds, bias factor, and attach sign */
+    let mut h0 = H0_BIAS * hnew;
+    if h0 < hlb {
+        h0 = hlb;
+    }
+    if h0 > hub {
+        h0 = hub;
+    }
+    if sign == -1 {
+        h0 = -h0;
+    }
+    ark_mem.h = h0;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkUpperBoundH0
+
+  This routine sets an upper bound on abs(h0) based on
+  tdist = tn - t0 and the values of y[i]/y'[i].
+  ---------------------------------------------------------------*/
+pub fn arkUpperBoundH0(ark_mem: &mut ARKodeMem, tdist: f64) -> f64 {
+    use crate::arkode_impl::{H0_UBFACTOR, ONE};
+    use crate::nvector_serial::{N_VAbs, N_VDiv, N_VMaxNorm};
+
+    /* Bound based on |y0|/|y0'| -- allow at most an increase of
+     * H0_UBFACTOR in y0 (based on a forward Euler step). The weight
+     * factor is used as a safeguard against zero components in y0. */
+    let mut temp1 = std::mem::replace(&mut ark_mem.tempv1, NVector::new(0));
+    let mut temp2 = std::mem::replace(&mut ark_mem.tempv2, NVector::new(0));
+
+    N_VAbs(&ark_mem.yn, &mut temp2);
+    let _ = ark_efun_apply_yn(ark_mem, &mut temp1);
+    temp1.invert_inplace(); /* N_VInv(temp1, temp1) */
+    temp1.linear_sum_with(ONE, H0_UBFACTOR, &temp2); /* temp1 = H0_UBFACTOR*temp2 + temp1 */
+
+    N_VAbs(&ark_mem.fn_, &mut temp2);
+
+    let mut quot = NVector::new(temp1.data.len());
+    N_VDiv(&temp2, &temp1, &mut quot);
+    let hub_inv = N_VMaxNorm(&quot);
+    /* (N_VDiv(temp2, temp1, temp1) in C: quotient built in a fresh
+    vector here, same element-wise values) */
+    temp1 = quot;
+
+    ark_mem.tempv1 = temp1;
+    ark_mem.tempv2 = temp2;
+
+    /* bound based on tdist -- allow at most a step of magnitude
+     * H0_UBFACTOR * tdist */
+    let mut hub = H0_UBFACTOR * tdist;
+
+    /* Use the smaller of the two */
+    if hub * hub_inv > ONE {
+        hub = ONE / hub_inv;
+    }
+
+    hub
+}
+
+/*---------------------------------------------------------------
+  arkYddNorm
+
+  This routine computes an estimate of the second derivative of y
+  using a difference quotient, and returns its WRMS norm.
+  ---------------------------------------------------------------*/
+pub fn arkYddNorm(ark_mem: &mut ARKodeMem, hg: f64, yddnrm: &mut f64) -> i32 {
+    use crate::arkode_impl::{ARK_FULLRHS_OTHER, ARK_RHSFUNC_FAIL, ONE};
+    use crate::nvector_serial::{N_VLinearSum, N_VScale, N_VWrmsNorm};
+
+    /* increment y with a multiple of f */
+    N_VLinearSum(hg, &ark_mem.fn_, ONE, &ark_mem.yn, &mut ark_mem.ycur);
+
+    /* compute y', via the ODE RHS routine */
+    let fullrhs = ark_mem.step_fullrhs.unwrap();
+    let ycur = std::mem::replace(&mut ark_mem.ycur, NVector::new(0));
+    let mut tempv1 = std::mem::replace(&mut ark_mem.tempv1, NVector::new(0));
+    let retval = fullrhs(ark_mem, ark_mem.tcur + hg, &ycur, &mut tempv1, ARK_FULLRHS_OTHER);
+    ark_mem.ycur = ycur;
+    ark_mem.tempv1 = tempv1;
+    if retval != 0 {
+        return ARK_RHSFUNC_FAIL;
+    }
+
+    /* difference new f and original f to estimate y'' (C output
+    aliases the first operand: in-place method family) */
+    let fn_ = std::mem::replace(&mut ark_mem.fn_, NVector::new(0));
+    ark_mem.tempv1.linear_sum_with(ONE / hg, -ONE / hg, &fn_);
+    ark_mem.fn_ = fn_;
+
+    /* reset ycur to equal yn (unnecessary?) */
+    let mut ycur = std::mem::replace(&mut ark_mem.ycur, NVector::new(0));
+    N_VScale(ONE, &ark_mem.yn, &mut ycur);
+    ark_mem.ycur = ycur;
+
+    /* compute norm of y'' */
+    *yddnrm = N_VWrmsNorm(&ark_mem.tempv1, &ark_mem.ewt);
+
+    ARK_SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +864,52 @@ mod tests {
         /* free restores the workspace bookkeeping */
         arkFreeVectors(&mut ark_mem);
         assert_eq!(ark_mem.lrw, lrw_before);
+    }
+
+    fn const_rhs(_a: &mut ARKodeMem, _t: f64, _y: &NVector, f: &mut NVector, _m: i32) -> i32 {
+        f.data[0] = 1.0;
+        0
+    }
+
+    #[test]
+    fn hin_constant_rhs_matches_algorithm() {
+        use crate::arkode_impl::{H0_BIAS, H0_LBFACTOR, H0_UBFACTOR};
+        use crate::sundials_math::SUNRsqrt;
+        let ctx = SUNContext_Create();
+        let mut ark_mem = arkCreate(&ctx);
+        ark_mem.step_init = Some(stub_init);
+        ark_mem.step = Some(stub_step);
+        ark_mem.step_mem = Some(Box::new(0i32));
+        ark_mem.step_fullrhs = Some(const_rhs);
+        let mut y0 = NVector::new(1);
+        y0.data[0] = 1.0;
+        assert_eq!(arkInit(&mut ark_mem, 0.0, &y0, FIRST_INIT), ARK_SUCCESS);
+        /* fn and ycur as arkInitialSetup / ARKodeEvolve would provide them */
+        ark_mem.fn_ = NVector::new(1);
+        ark_mem.ycur = NVector::new(1);
+        /* ewt as arkInitialSetup would set it */
+        let mut ewt = std::mem::replace(&mut ark_mem.ewt, NVector::new(0));
+        assert_eq!(ark_efun_apply_yn(&mut ark_mem, &mut ewt), 0);
+        ark_mem.ewt = ewt;
+
+        assert_eq!(arkHin(&mut ark_mem, 1.0), ARK_SUCCESS);
+
+        /* y' = 1 (constant): yddnrm = 0 every pass, so
+           hg1   = sqrt(hlb*hub),
+           hnew1 = sqrt(hg1*hub),
+           pass 2 has hrat > 2 with count1 > 1 -> fall back to hnew1,
+           h     = H0_BIAS * hnew1 (within [hlb, hub]).
+           hub = H0_UBFACTOR * tdist = 0.1 here (the |y|/|y'| bound is
+           larger). */
+        let tround = ark_mem.uround * 1.0;
+        let hlb = H0_LBFACTOR * tround;
+        let hub = H0_UBFACTOR * 1.0;
+        let expected = H0_BIAS * SUNRsqrt(SUNRsqrt(hlb * hub) * hub);
+        assert_eq!(ark_mem.h, expected);
+
+        /* integrating backwards flips the sign */
+        ark_mem.fn_is_current = true;
+        assert_eq!(arkHin(&mut ark_mem, -1.0), ARK_SUCCESS);
+        assert!(ark_mem.h < 0.0);
     }
 }
