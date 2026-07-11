@@ -57,17 +57,12 @@ pub type SUNComm = i32;
 /// `SUN_COMM_NULL` (sundials_types.h, serial branch).
 pub const SUN_COMM_NULL: SUNComm = 0;
 
-/* SUN_ERR_PROFILER_* (sundials_errors.h). In the C enum these are
-   -9981..-9977; sundials_errors.rs renumbered the codes that follow
-   the profiler block, so the C values would collide with
-   SUN_ERR_SUNCTX_CORRUPT etc. Unique values in the same C error
-   range are used instead (name lookup still reports "unknown
-   error" from SUNGetErrMsg, which never handled these codes here). */
-pub const SUN_ERR_PROFILER_MAPFULL: SUNErrCode = -9976;
-pub const SUN_ERR_PROFILER_MAPGET: SUNErrCode = -9975;
-pub const SUN_ERR_PROFILER_MAPINSERT: SUNErrCode = -9974;
-pub const SUN_ERR_PROFILER_MAPKEYNOTFOUND: SUNErrCode = -9973;
-pub const SUN_ERR_PROFILER_MAPSORT: SUNErrCode = -9972;
+/* SUN_ERR_PROFILER_* now live in sundials_errors.rs with the exact C
+   enum values (re-exported here for the existing paths). */
+pub use crate::sundials_errors::{
+    SUN_ERR_PROFILER_MAPFULL, SUN_ERR_PROFILER_MAPGET, SUN_ERR_PROFILER_MAPINSERT,
+    SUN_ERR_PROFILER_MAPKEYNOTFOUND, SUN_ERR_PROFILER_MAPSORT,
+};
 
 /// SUNDIALS_ROOT_TIMER (sundials_profiler_impl.h)
 pub const SUNDIALS_ROOT_TIMER: &str = "From profiler epoch";

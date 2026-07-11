@@ -28,11 +28,19 @@ pub const SUN_ERR_DESTROY_FAIL: SUNErrCode = -9986;
 pub const SUN_ERR_NOT_IMPLEMENTED: SUNErrCode = -9985;
 pub const SUN_ERR_USER_FCN_FAIL: SUNErrCode = -9984;
 pub const SUN_ERR_DATANODE_NODENOTFOUND: SUNErrCode = -9983;
-pub const SUN_ERR_DATANODE_MAXCOUNT: SUNErrCode = -9982;
-pub const SUN_ERR_SUNCTX_CORRUPT: SUNErrCode = -9980;
-pub const SUN_ERR_MPI_FAIL: SUNErrCode = -9979;
-pub const SUN_ERR_UNREACHABLE: SUNErrCode = -9978;
-pub const SUN_ERR_UNKNOWN: SUNErrCode = -9977;
+pub const SUN_ERR_PROFILER_MAPFULL: SUNErrCode = -9982;
+pub const SUN_ERR_PROFILER_MAPGET: SUNErrCode = -9981;
+pub const SUN_ERR_PROFILER_MAPINSERT: SUNErrCode = -9980;
+pub const SUN_ERR_PROFILER_MAPKEYNOTFOUND: SUNErrCode = -9979;
+pub const SUN_ERR_PROFILER_MAPSORT: SUNErrCode = -9978;
+pub const SUN_ERR_ADJOINT_STEPPERFAILED: SUNErrCode = -9977;
+pub const SUN_ERR_ADJOINT_STEPPERINVALIDSTOP: SUNErrCode = -9976;
+pub const SUN_ERR_CHECKPOINT_NOT_FOUND: SUNErrCode = -9975;
+pub const SUN_ERR_CHECKPOINT_MISMATCH: SUNErrCode = -9974;
+pub const SUN_ERR_SUNCTX_CORRUPT: SUNErrCode = -9973;
+pub const SUN_ERR_MPI_FAIL: SUNErrCode = -9972;
+pub const SUN_ERR_UNREACHABLE: SUNErrCode = -9971;
+pub const SUN_ERR_UNKNOWN: SUNErrCode = -9970;
 pub const SUN_ERR_MAXIMUM: SUNErrCode = -1000;
 
 /// SUNGetErrMsg (sundials_errors.c)
@@ -55,6 +63,26 @@ pub fn SUNGetErrMsg(code: SUNErrCode) -> &'static str {
         SUN_ERR_DESTROY_FAIL => "a destroy function returned an error",
         SUN_ERR_NOT_IMPLEMENTED => "operation is not implemented: function pointer is NULL",
         SUN_ERR_USER_FCN_FAIL => "the user provided callback function failed",
+        SUN_ERR_DATANODE_NODENOTFOUND => "the data node could not be found",
+        SUN_ERR_PROFILER_MAPFULL => {
+            "the number of profiler entries exceeded SUNPROFILER_MAX_ENTRIES"
+        }
+        SUN_ERR_PROFILER_MAPGET => "unknown error getting SUNProfiler timer",
+        SUN_ERR_PROFILER_MAPINSERT => "unknown error inserting SUNProfiler timer",
+        SUN_ERR_PROFILER_MAPKEYNOTFOUND => "timer was not found in SUNProfiler",
+        SUN_ERR_PROFILER_MAPSORT => "error sorting SUNProfiler map",
+        SUN_ERR_ADJOINT_STEPPERFAILED => {
+            "SUNStepper stopped without successfully reaching the requested \
+             output time when solving the adjoint system"
+        }
+        SUN_ERR_ADJOINT_STEPPERINVALIDSTOP => {
+            "SUNStepper stopped with a flag not supported by the adjoint solver"
+        }
+        SUN_ERR_CHECKPOINT_NOT_FOUND => "the requested checkpoint was not found",
+        SUN_ERR_CHECKPOINT_MISMATCH => {
+            "the expected time for the checkpoint and the stored time do not match"
+        }
+        SUN_ERR_SUNCTX_CORRUPT => "SUNContext is NULL or corrupt",
         SUN_ERR_UNREACHABLE => {
             "reached code that should be unreachable: open an issue at: \
              https://github.com/LLNL/sundials"
