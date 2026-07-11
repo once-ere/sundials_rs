@@ -444,3 +444,109 @@ pub fn arkReplaceAdaptController(
 
     ARK_SUCCESS
 }
+
+/* -----------------------------------------------------------------
+ * Counterparts of sunfprintf_real / sunfprintf_long
+ * (src/sundials/sundials_utils.h). SUN_FORMAT_G is "%.15g" and
+ * SUN_FORMAT_E is "% .15e" for double precision.
+ * -----------------------------------------------------------------*/
+
+const SUN_TABLE_WIDTH: usize = 29;
+
+fn sunfprintf_real(
+    outfile: &mut dyn std::io::Write,
+    fmt: crate::sundials_types::SUNOutputFormat,
+    start: bool,
+    name: &str,
+    value: f64,
+) {
+    use crate::sundials_types::SUN_OUTPUTFORMAT_TABLE;
+    use crate::sundials_utils::{fmt_e, fmt_g};
+    if fmt == SUN_OUTPUTFORMAT_TABLE {
+        let _ = writeln!(outfile, "{:<width$} = {}", name, fmt_g(value, 0, 15),
+                         width = SUN_TABLE_WIDTH);
+    } else {
+        if !start {
+            let _ = write!(outfile, ",");
+        }
+        /* C "% .15e": a space is printed in place of a plus sign */
+        let e = fmt_e(value, 0, 15);
+        let e = if e.starts_with('-') { e } else { format!(" {}", e) };
+        let _ = write!(outfile, "{},{}", name, e);
+    }
+}
+
+fn sunfprintf_long(
+    outfile: &mut dyn std::io::Write,
+    fmt: crate::sundials_types::SUNOutputFormat,
+    start: bool,
+    name: &str,
+    value: i64,
+) {
+    use crate::sundials_types::SUN_OUTPUTFORMAT_TABLE;
+    if fmt == SUN_OUTPUTFORMAT_TABLE {
+        let _ = writeln!(outfile, "{:<width$} = {}", name, value, width = SUN_TABLE_WIDTH);
+    } else {
+        if !start {
+            let _ = write!(outfile, ",");
+        }
+        let _ = write!(outfile, "{},{}", name, value);
+    }
+}
+
+/*---------------------------------------------------------------
+  ARKodePrintAllStats:
+
+  Prints the current value of all statistics
+  ---------------------------------------------------------------*/
+pub fn ARKodePrintAllStats(
+    ark_mem: &mut ARKodeMem,
+    outfile: &mut dyn std::io::Write,
+    fmt: crate::sundials_types::SUNOutputFormat,
+) -> i32 {
+    use crate::sundials_types::{SUNFALSE, SUNTRUE};
+
+    /* (invalid formatting options are unrepresentable in the enum) */
+
+    sunfprintf_real(outfile, fmt, SUNTRUE, "Current time", ark_mem.tcur);
+    sunfprintf_long(outfile, fmt, SUNFALSE, "Steps", ark_mem.nst);
+    sunfprintf_long(outfile, fmt, SUNFALSE, "Step attempts", ark_mem.nst_attempts);
+    sunfprintf_long(
+        outfile,
+        fmt,
+        SUNFALSE,
+        "Stability limited steps",
+        ark_mem.hadapt_mem.as_ref().unwrap().nst_exp,
+    );
+    sunfprintf_long(
+        outfile,
+        fmt,
+        SUNFALSE,
+        "Accuracy limited steps",
+        ark_mem.hadapt_mem.as_ref().unwrap().nst_acc,
+    );
+    sunfprintf_long(outfile, fmt, SUNFALSE, "Error test fails", ark_mem.netf);
+    sunfprintf_long(outfile, fmt, SUNFALSE, "NLS step fails", ark_mem.ncfn);
+    sunfprintf_long(
+        outfile,
+        fmt,
+        SUNFALSE,
+        "Inequality constraint fails",
+        ark_mem.nconstrfails,
+    );
+    sunfprintf_real(outfile, fmt, SUNFALSE, "Initial step size", ark_mem.h0u);
+    sunfprintf_real(outfile, fmt, SUNFALSE, "Last step size", ark_mem.hold);
+    sunfprintf_real(outfile, fmt, SUNFALSE, "Current step size", ark_mem.next_h);
+    if let Some(root_mem) = ark_mem.root_mem.as_ref() {
+        sunfprintf_long(outfile, fmt, SUNFALSE, "Root fn evals", root_mem.nge);
+    }
+
+    /* (relaxation stats: module pending; relax_enabled cannot be set) */
+
+    /* Print stepper stats (if provided) */
+    if let Some(step_printallstats) = ark_mem.step_printallstats {
+        return step_printallstats(ark_mem, outfile, fmt);
+    }
+
+    ARK_SUCCESS
+}

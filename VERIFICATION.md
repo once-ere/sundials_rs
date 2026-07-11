@@ -152,7 +152,7 @@ example.
 | ark_analytic_lsrk_domeigest | todo |
 | ark_analytic_lsrk_varjac | todo |
 | ark_analytic_mels | todo |
-| ark_analytic_nonlin | todo |
+| ark_analytic_nonlin | IDENTICAL (shipped ref; the FIRST arkode example, verified byte-exact) |
 | ark_analytic_partitioned | todo |
 | ark_analytic_ssprk | todo |
 | ark_brusselator | todo |

@@ -61,9 +61,9 @@ pub fn SUNRpowerI(base: f64, exponent: i32) -> f64 {
 
 /// SUNRpowerR: base^exponent for real exponent; 0 for negative base.
 pub fn SUNRpowerR(base: f64, exponent: f64) -> f64 {
-    if base <= 0.0 {
-        return 0.0;
-    }
+    /* C 7.7.0: plain pow(base, exponent) — no base<=0 guard; e.g. the
+    Soderlind controller relies on pow(0, negative) = +inf flowing
+    through its step-growth bounds */
     base.powf(exponent)
 }
 
