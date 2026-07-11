@@ -428,7 +428,9 @@ pub struct IDAMem {
     /*---------------------------
       Sensitivity Related Vectors
       ---------------------------*/
-    pub ida_phiS: [Vec<NVector>; MXORDP1], /* (C: N_Vector* ida_phiS[MXORDP1]) */
+    pub ida_phiS: Vec<Vec<NVector>>, /* (C: N_Vector* ida_phiS[MXORDP1]; Vec of
+                                        maxcol+1 live rows per the ida_phi
+                                        modeling — IDASensAllocVectors) */
     pub ida_ewtS: Vec<NVector>,
 
     pub ida_eeS: Vec<NVector>, /* cumulative sensitivity corrections        */
@@ -455,7 +457,9 @@ pub struct IDAMem {
     /*--------------------------------------
       Quadrature Sensitivity Related Vectors
       --------------------------------------*/
-    pub ida_phiQS: [Vec<NVector>; MXORDP1], /* Mod. div. diffs. for quadr. sensi. */
+    pub ida_phiQS: Vec<Vec<NVector>>, /* Mod. div. diffs. for quadr. sensi.
+                                         (C: N_Vector* ida_phiQS[MXORDP1]; Vec of
+                                         maxord+1 live rows — IDAQuadSensAllocVectors) */
     pub ida_ewtQS: Vec<NVector>, /* error weight vectors for sensitivities  */
 
     pub ida_eeQS: Vec<NVector>, /* cumulative quadr.sensi.corrections       */
@@ -630,6 +634,9 @@ pub struct IDAMem {
     pub ida_lmem: LsModule, /* linear solver interface structure */
     pub ida_dcj: f64,       /* parameter that determines cj ratio thresholds for calling
                              * the linear solver setup function */
+
+    /* Flag to request a call to the setup routine */
+    pub ida_forceSetup: bool,
 
     /* Flag to indicate successful ida_linit call */
     pub ida_linitOK: bool,
@@ -842,7 +849,7 @@ impl Default for IDAMem {
             ida_ewtQ: NVector::default(),
             ida_eeQ: NVector::default(),
 
-            ida_phiS: [(); MXORDP1].map(|_| Vec::new()),
+            ida_phiS: Vec::new(),
             ida_ewtS: Vec::new(),
             ida_eeS: Vec::new(),
             ida_yyS: Vec::new(),
@@ -854,7 +861,7 @@ impl Default for IDAMem {
             ida_yyS0: Vec::new(),
             ida_ypS0: Vec::new(),
 
-            ida_phiQS: [(); MXORDP1].map(|_| Vec::new()),
+            ida_phiQS: Vec::new(),
             ida_ewtQS: Vec::new(),
             ida_eeQS: Vec::new(),
             ida_yyQS: Vec::new(),
@@ -924,6 +931,7 @@ impl Default for IDAMem {
             ida_SetupDone: SUNFALSE,
 
             ida_lmem: LsModule::None,
+            ida_forceSetup: SUNFALSE,
             ida_linitOK: SUNFALSE,
 
             ida_gfun: None,
