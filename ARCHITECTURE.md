@@ -429,3 +429,23 @@ arkode crate (arkode_impl.rs, pinned):
 - ARKTimestepGetLinMemFn/GetMassMemFn return Option<&mut UserData>
   (C returns void*); ARKTimestepGetNonlinearSystemData's out-pointer
   shape is finalized when arkstep lands.
+
+### Addendum C.1 — arkode aliasing conventions (pinned with arkode_interp)
+
+- N_Vector NULL-ness in arkode_rs: a zero-length NVector
+  (`v.data.is_empty()`); ARKODE never allocates zero-length problem
+  vectors. arkAllocVec takes the template LENGTH (serial N_VClone
+  needs nothing else); arkFreeVec/arkResizeVec keep the C lrw/liw
+  bookkeeping.
+- C calls shaped `ark_mem->step_fullrhs(ark_mem, t, ark_mem->yn,
+  ark_mem->fn, mode)` use ark_step_fullrhs_yn_fn (arkode_impl.rs):
+  the ark_mem-owned argument vectors are mem::replace'd out for the
+  call and restored after. RULE: step_fullrhs implementations never
+  read ark_mem.yn / ark_mem.fn_ / ark_mem.interp directly — all
+  state arrives through the y/f arguments (C guarantees this).
+- ARKInterp dispatchers (arkInterpInit/Update/Evaluate/...) take
+  ark_mem only — C always passes ark_mem->interp — and take/put-back
+  ark_mem.interp so the Hermite/Lagrange impls can borrow ark_mem
+  and their content disjointly. The Hermite bootstrap recursion
+  (quartic/quintic) recurses on the impl fn directly (C dispatches
+  back to the same op).
