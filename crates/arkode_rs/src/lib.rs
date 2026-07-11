@@ -13,6 +13,11 @@
 #![allow(non_upper_case_globals)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
+/* C-faithful constructs (line-for-line translation rule, CLAUDE.md):
+   fprintf strings kept byte-identical to C, manual element loops
+   mirroring C loops. Same rationale as the sundials_core allows. */
+#![allow(clippy::write_with_newline)]
+#![allow(clippy::manual_memcpy)]
 #![forbid(unsafe_code)]
 
 // Shared SUNDIALS core (re-exported so donor `crate::<mod>` paths resolve)
@@ -63,6 +68,7 @@ pub mod arkode_adapt_impl;
 pub mod arkode_root_impl;
 pub mod arkode_relaxation_impl;
 pub mod arkode_interp_impl;
+pub mod arkode_butcher;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
 pub use crate::arkode_impl::*;
