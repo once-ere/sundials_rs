@@ -2,9 +2,19 @@
  * Translated from examples/ida/serial/idaKrylovDemo_ls.c (IDA 7.7.0)
  * Programmer(s): Allan Taylor, Alan Hindmarsh and Radu Serban @ LLNL
  *
- * Loops through the Krylov linear solvers SPGMR, SPBCGS and SPTFQMR
- * on the serial 2D heat-equation DAE with a diagonal preconditioner.
- * No IDACalcIC. Output at t = 0.01, .02, ..., 10.24.
+ * This example loops through the available iterative linear solvers:
+ * SPGMR, SPBCG and SPTFQMR.
+ *
+ * Example problem for IDA: 2D heat equation, serial, GMRES.
+ *
+ * The DAE system solved is a spatial discretization of the PDE
+ *          du/dt = d^2u/dx^2 + d^2u/dy^2
+ * on the unit square with u = 0 on all edges; initial condition
+ * u = 16 x (1 - x) y (1 - y) on a uniform MGRID x MGRID grid
+ * (interior ODEs + boundary algebraic equations, N = MGRID^2).
+ * The preconditioner uses the diagonal elements of the Jacobian
+ * only. Constraints u >= 0 are posed for all components. Output is
+ * taken at t = 0, .01, .02, .04, ..., 10.24.
  * -----------------------------------------------------------------*/
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
@@ -28,10 +38,10 @@ const USE_SPTFQMR: i32 = 2;
 
 /* User data type */
 struct HeatData {
-    mm: usize,
+    mm: usize, /* number of grid points */
     dx: f64,
     coeff: f64,
-    pp: NVector, /* inverse-diagonal preconditioner vector */
+    pp: NVector, /* vector of prec. diag. elements */
 }
 
 /*
@@ -40,8 +50,13 @@ struct HeatData {
  *--------------------------------------------------------------------
  */
 
+/* resHeat core: 5-point central differencing on the interior points,
+   res = u at the boundary points. */
 fn resHeat_compute(mm: usize, coeff: f64, uu: &NVector, up: &NVector, rr: &mut NVector) {
+    /* Initialize rr to uu, to take care of boundary equations. */
     N_VScale(ONE, uu, rr);
+
+    /* Loop over interior points; set res = up - (central difference). */
     for j in 1..MGRID - 1 {
         let offset = mm * j;
         for i in 1..mm - 1 {
@@ -53,13 +68,16 @@ fn resHeat_compute(mm: usize, coeff: f64, uu: &NVector, up: &NVector, rr: &mut N
     }
 }
 
+/* resHeat: heat equation system residual function (user-supplied). */
 fn resHeat(_tt: f64, uu: &NVector, up: &NVector, rr: &mut NVector, user_data: &mut UserData) -> i32 {
     let data = user_data.as_ref().unwrap().downcast_ref::<HeatData>().unwrap();
     resHeat_compute(data.mm, data.coeff, uu, up, rr);
     0
 }
 
-/* PsetupHeat: diagonal preconditioner. Only cj and coeff are used. */
+/* PsetupHeat: setup for diagonal preconditioner. Keeps only the diagonal
+   of J = dF/du + cj*dF/du', stored as inverses in data.pp. Only cj and
+   data (with pp etc.) are used from the argument list. */
 fn PsetupHeat(
     _tt: f64,
     _uu: &NVector,
@@ -73,8 +91,13 @@ fn PsetupHeat(
     let data = prec_data.as_mut().unwrap().downcast_mut::<HeatData>().unwrap();
     let mm = data.mm;
 
+    /* Initialize the entire vector to 1., then set the interior points to
+       the correct value for preconditioning. */
     N_VConst(ONE, &mut data.pp);
+
+    /* Compute the inverse of the preconditioner diagonal elements. */
     let pelinv = ONE / (c_j + FOUR * data.coeff);
+
     for j in 1..mm - 1 {
         let offset = mm * j;
         for i in 1..mm - 1 {
@@ -82,10 +105,11 @@ fn PsetupHeat(
             data.pp.data[loc] = pelinv;
         }
     }
+
     0
 }
 
-/* PsolveHeat: z = pp .* r. */
+/* PsolveHeat: solve preconditioner linear system, z = pp .* r. */
 #[allow(clippy::too_many_arguments)]
 fn PsolveHeat(
     _tt: f64,
@@ -109,10 +133,12 @@ fn PsolveHeat(
  *--------------------------------------------------------------------
  */
 
+/* SetInitialProfile: routine to initialize u and up vectors. */
 fn SetInitialProfile(data: &HeatData, uu: &mut NVector, up: &mut NVector, res: &mut NVector) {
     let mm = data.mm;
     let mm1 = mm - 1;
 
+    /* Initialize uu on all grid points. */
     for j in 0..mm {
         let yfact = data.dx * j as f64;
         let offset = mm * j;
@@ -123,10 +149,16 @@ fn SetInitialProfile(data: &HeatData, uu: &mut NVector, up: &mut NVector, res: &
         }
     }
 
+    /* Initialize up vector to 0. */
     N_VConst(ZERO, up);
+
+    /* resHeat sets res to negative of ODE RHS values at interior points. */
     resHeat_compute(data.mm, data.coeff, uu, up, res);
+
+    /* Copy -res into up to get correct interior initial up values. */
     N_VScale(-ONE, res, up);
 
+    /* Set up at boundary points to zero. */
     for j in 0..mm {
         let offset = mm * j;
         for i in 0..mm {
@@ -138,6 +170,16 @@ fn SetInitialProfile(data: &HeatData, uu: &mut NVector, up: &mut NVector, res: &
     }
 }
 
+/* Re-run SetInitialProfile using the HeatData stored in ida_user_data. */
+fn SetInitialProfile_reinit(mem: &mut IDAMem, uu: &mut NVector, up: &mut NVector, res: &mut NVector) {
+    let data = mem.ida_user_data.as_ref().unwrap().downcast_ref::<HeatData>().unwrap();
+    /* borrow only the fields we need (copy scalars) to avoid aliasing mem */
+    let (mm, dx, coeff) = (data.mm, data.dx, data.coeff);
+    let tmp = HeatData { mm, dx, coeff, pp: N_VClone(uu) };
+    SetInitialProfile(&tmp, uu, up, res);
+}
+
+/* Print first lines of output (problem description). */
 fn PrintHeader(rtol: f64, atol: f64, linsolver: i32) {
     print!("\nidaKrylovDemo_ls: Heat equation, serial example problem for IDA\n");
     print!("               Discretized heat equation on 2D unit square.\n");
@@ -153,14 +195,21 @@ fn PrintHeader(rtol: f64, atol: f64, linsolver: i32) {
     print!("Constraints set to force all solution components >= 0. \n");
 
     match linsolver {
-        USE_SPGMR => print!("Linear solver: SPGMR, preconditioner using diagonal elements. \n"),
-        USE_SPBCG => print!("Linear solver: SPBCG, preconditioner using diagonal elements. \n"),
-        USE_SPTFQMR => print!("Linear solver: SPTFQMR, preconditioner using diagonal elements. \n"),
+        USE_SPGMR => {
+            print!("Linear solver: SPGMR, preconditioner using diagonal elements. \n");
+        }
+        USE_SPBCG => {
+            print!("Linear solver: SPBCG, preconditioner using diagonal elements. \n");
+        }
+        USE_SPTFQMR => {
+            print!("Linear solver: SPTFQMR, preconditioner using diagonal elements. \n");
+        }
         _ => {}
     }
 }
 
-fn PrintOutput(mem: &mut IDAMem, t: f64, uu: &NVector) {
+/* PrintOutput: print max norm of solution and current solver statistics. */
+fn PrintOutput(mem: &mut IDAMem, t: f64, uu: &NVector, _linsolver: i32) {
     let umax = N_VMaxNorm(uu);
 
     let mut kused = 0i32;
@@ -210,9 +259,11 @@ fn check_retval(retval: i32, funcname: &str) -> bool {
  *--------------------------------------------------------------------
  */
 fn main() {
-    /* Retrieve the command-line options */
-    let args: Vec<String> = std::env::args().collect();
-    let nrmfactor: i32 = if args.len() > 1 { args[1].parse().unwrap_or(0) } else { 0 };
+    /* Retrieve the command-line options (C: nrmfactor = atoi(argv[1])). */
+    let nrmfactor: i32 = std::env::args()
+        .nth(1)
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .unwrap_or(0);
 
     /* Create the SUNDIALS context object for this simulation */
     let sunctx = SUNContext_Create();
@@ -223,6 +274,7 @@ fn main() {
     let mut res = N_VClone(&uu);
     let mut constraints = N_VClone(&uu);
 
+    /* Assign parameters in the user data structure. */
     let data = HeatData {
         mm: MGRID,
         dx: ONE / (MGRID as f64 - ONE),
@@ -269,42 +321,57 @@ fn main() {
     /* START: Loop through SPGMR, SPBCG and SPTFQMR linear solver modules */
     for linsolver in 0..3 {
         if linsolver != 0 {
-            /* Re-initialize uu, up (fetch HeatData scalars from user_data). */
-            let (mm, dx, coeff) = {
-                let d = mem.ida_user_data.as_ref().unwrap().downcast_ref::<HeatData>().unwrap();
-                (d.mm, d.dx, d.coeff)
-            };
-            let tmp = HeatData { mm, dx, coeff, pp: N_VClone(&uu) };
-            SetInitialProfile(&tmp, &mut uu, &mut up, &mut res);
+            /* Re-initialize uu, up. */
+            SetInitialProfile_reinit(&mut mem, &mut uu, &mut up, &mut res);
 
+            /* Re-initialize IDA */
             retval = IDAReInit(&mut mem, t0, &uu, &up);
             if check_retval(retval, "IDAReInit") {
                 std::process::exit(1);
             }
         }
 
-        /* Attach a new linear solver module */
+        /* Free previous linear solver and attach a new linear solver module
+           (in Rust the previous LS is dropped when replaced). */
         let ls = match linsolver {
+            /* (a) SPGMR */
             USE_SPGMR => {
+                /* Print header */
                 print!(" -------");
                 print!(" \n| SPGMR |\n");
                 print!(" -------\n");
+
+                /* Call SUNLinSol_SPGMR to specify the linear solver SPGMR with
+                   left preconditioning and the default maximum Krylov dimension */
                 SUNLinSol_SPGMR(&uu, SUN_PREC_LEFT, 0, &sunctx)
             }
+
+            /* (b) SPBCG */
             USE_SPBCG => {
+                /* Print header */
                 print!(" -------");
                 print!(" \n| SPBCGS |\n");
                 print!(" -------\n");
+
+                /* Call SUNLinSol_SPBCGS to specify the linear solver SPBCGS with
+                   left preconditioning and the default maximum Krylov dimension */
                 SUNLinSol_SPBCGS(&uu, SUN_PREC_LEFT, 0, &sunctx)
             }
+
+            /* (c) SPTFQMR */
             _ => {
+                /* Print header */
                 print!(" ---------");
                 print!(" \n| SPTFQMR |\n");
                 print!(" ---------\n");
+
+                /* Call SUNLinSol_SPTFQMR to specify the linear solver SPTFQMR with
+                   left preconditioning and the default maximum Krylov dimension */
                 SUNLinSol_SPTFQMR(&uu, SUN_PREC_LEFT, 0, &sunctx)
             }
         };
 
+        /* Attach the linear solver */
         retval = IDASetLinearSolver(&mut mem, ls, None);
         if check_retval(retval, "IDASetLinearSolver") {
             std::process::exit(1);
@@ -318,10 +385,11 @@ fn main() {
 
         /* Set the linear solver tolerance conversion factor */
         let nrmfac = match nrmfactor {
-            1 => (NEQ as f64).sqrt(),
-            2 => -ONE,
-            _ => ZERO,
+            1 => (NEQ as f64).sqrt(), /* use the square root of the vector length */
+            2 => -ONE,                /* compute with dot product */
+            _ => ZERO,                /* use the default */
         };
+
         retval = IDASetLSNormFactor(&mut mem, nrmfac);
         if check_retval(retval, "IDASetLSNormFactor") {
             std::process::exit(1);
@@ -330,6 +398,7 @@ fn main() {
         /* Print output heading. */
         PrintHeader(rtol, atol, linsolver);
 
+        /* Print output table heading, and initial line of table. */
         print!("\n   Output Summary (umax = max-norm of solution) \n\n");
         print!("  time     umax       k  nst  nni  nje   nre   nreLS    h      npe nps\n");
         print!("----------------------------------------------------------------------\n");
@@ -342,7 +411,7 @@ fn main() {
             if check_retval(retval, "IDASolve") {
                 std::process::exit(1);
             }
-            PrintOutput(&mut mem, tret, &uu);
+            PrintOutput(&mut mem, tret, &uu, linsolver);
             tout *= TWO;
         }
 
@@ -353,6 +422,7 @@ fn main() {
         IDAGetNumErrTestFails(&mut mem, &mut netf);
         IDAGetNumNonlinSolvConvFails(&mut mem, &mut ncfn);
         IDAGetNumLinConvFails(&mut mem, &mut ncfl);
+
         println!("\nError test failures            = {}", netf);
         println!("Nonlinear convergence failures = {}", ncfn);
         println!("Linear convergence failures    = {}", ncfl);
@@ -360,8 +430,8 @@ fn main() {
         if linsolver < 2 {
             print!("\n======================================================================\n\n");
         }
-    }
+    } /* END: Loop through SPGMR, SPBCG and SPTFQMR linear solver modules */
 
-    /* Free memory (RAII) */
+    /* Free Memory (RAII) */
     IDAFree(mem);
 }
