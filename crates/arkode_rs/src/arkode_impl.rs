@@ -898,6 +898,20 @@ impl Default for ARKodeMem {
     }
 }
 
+/*===============================================================
+  Reusable ARKODE Error Messages (arkode_impl.h; MSG_TIME* formats
+  are produced with fmt_g at the call sites)
+  ===============================================================*/
+
+pub const MSG_ARK_NO_MEM: &str = "arkode_mem = NULL illegal.";
+pub const MSG_ARK_ARKMEM_FAIL: &str = "Allocation of arkode_mem failed.";
+pub const MSG_ARK_MEM_FAIL: &str = "A memory request failed.";
+pub const MSG_ARK_NULL_G: &str = "g = NULL illegal.";
+pub const MSG_ARK_NULL_DKY: &str = "dky = NULL illegal.";
+pub const MSG_ARKADAPT_NO_MEM: &str = "Adaptivity memory structure not allocated.";
+pub const MSG_ARK_MISSING_FULLRHS: &str = "Time-stepping module missing fullrhs routine \
+                                           (required by requested solver configuration).";
+
 /// Pinned crate convention for C calls of the form
 /// `ark_mem->step_fullrhs(ark_mem, t, ark_mem->yn, ark_mem->fn, mode)`:
 /// the ark_mem-owned argument vectors are taken out for the call and

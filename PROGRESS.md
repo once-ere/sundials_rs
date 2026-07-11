@@ -812,7 +812,7 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_adapt_impl.h — committed (ARKodeHAdaptMem struct + adaptivity constants)
 - [x] arkode_adapt.c — committed (arkAdapt signature drops the always-ark_mem-derived hadapt_mem/ycur args per Addendum C.1; SUNRcopysign added to sundials_math)
 - [x] arkode_root_impl.h — committed (ARKodeRootMem struct, C int*/realtype* arrays -> Vec)
-- [ ] arkode_root.c — todo
+- [x] arkode_root.c — committed (RootInit/Free/PrintMem/Check1-3/Rootfind; root_mem take/put-back wrappers; root_data alias collapsed to ark_mem.user_data; ARKodeGetDky ported into arkode.rs PART I)
 - [ ] arkode_erkstep_impl.h — todo
 - [ ] arkode_erkstep.c — todo
 - [ ] arkode_erkstep_io.c — todo

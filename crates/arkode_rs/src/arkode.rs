@@ -14,11 +14,81 @@
  * ark_mem borrow).
  * -----------------------------------------------------------------*/
 
-use crate::arkode_impl::{arkProcessError, ARKVecResizeFn, ARKodeMem, ARK_MEM_FAIL};
+use crate::arkode_impl::{
+    arkProcessError, ARKVecResizeFn, ARKodeMem, ARK_BAD_T, ARK_INTERP_MAX_DEGREE, ARK_MEM_FAIL,
+    ARK_MEM_NULL, ARK_SUCCESS, FUZZ_FACTOR, ZERO,
+};
+use crate::arkode_interp::arkInterpEvaluate;
 use crate::nvector_serial::NVector;
+use crate::sundials_math::SUNRabs;
 use crate::sundials_types::UserData;
+use crate::sundials_utils::fmt_g;
 
 pub const MSG_ARK_RESIZE_FAIL: &str = "Error in user-supplied resize() function.";
+
+/*---------------------------------------------------------------
+  ARKodeGetDky:
+
+  This routine computes the k-th derivative of the interpolating
+  polynomial at the time t and stores the result in the vector
+  dky. This routine internally calls arkInterpEvaluate to perform
+  the interpolation.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetDky(ark_mem: &mut ARKodeMem, t: f64, k: i32, dky: &mut NVector) -> i32 {
+    /* Check all inputs for legality (dky NULL unrepresentable) */
+    if ark_mem.interp.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "ARKodeGetDky",
+            file!(),
+            "Missing interpolation structure",
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* Allow for some slack */
+    let mut tfuzz =
+        FUZZ_FACTOR * ark_mem.uround * (SUNRabs(ark_mem.tcur) + SUNRabs(ark_mem.hold));
+    if ark_mem.hold < ZERO {
+        tfuzz = -tfuzz;
+    }
+    let tp = ark_mem.tcur - ark_mem.hold - tfuzz;
+    let tn1 = ark_mem.tcur + tfuzz;
+    if (t - tp) * (t - tn1) > ZERO {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_BAD_T,
+            line!(),
+            "ARKodeGetDky",
+            file!(),
+            &format!(
+                "Illegal value for t. t = {} is not between tcur - hold = {} and tcur = {}",
+                fmt_g(t, 0, 15),
+                fmt_g(ark_mem.tcur - ark_mem.hold, 0, 15),
+                fmt_g(ark_mem.tcur, 0, 15)
+            ),
+        );
+        return ARK_BAD_T;
+    }
+
+    /* call arkInterpEvaluate to evaluate result */
+    let s = (t - ark_mem.tcur) / ark_mem.h;
+    let retval = arkInterpEvaluate(ark_mem, s, k, ARK_INTERP_MAX_DEGREE, dky);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "ARKodeGetDky",
+            file!(),
+            "Error calling arkInterpEvaluate",
+        );
+        return retval;
+    }
+    ARK_SUCCESS
+}
 
 /*---------------------------------------------------------------
   arkAllocVec:
