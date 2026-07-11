@@ -455,6 +455,29 @@ pub type ARKTimestepSetForcingFn =
     fn(ark_mem: &mut ARKodeMem, tshift: f64, tscale: f64, f: &[NVector], nvecs: i32) -> i32;
 
 /*===============================================================
+  High level error handler, used throughout ARKODE
+  ===============================================================*/
+
+/// C arkProcessError routes printf-style messages to the SUNContext
+/// error handler stack; here messages go to stderr (equivalent to
+/// the default SUNLogErrHandlerFn behavior), matching the
+/// cvProcessError / IDAProcessError ports.
+pub fn arkProcessError(
+    _ark_mem: Option<&ARKodeMem>,
+    error_code: i32,
+    line: u32,
+    func: &str,
+    file: &str,
+    msg: &str,
+) {
+    if error_code == ARK_WARNING {
+        eprintln!("\n[ARKODE WARNING] {file}:{line} in {func}\n  {msg}\n");
+    } else {
+        eprintln!("\n[ARKODE ERROR] {file}:{line} in {func}\n  {msg}\n");
+    }
+}
+
+/*===============================================================
   ARKODE interpolation module definition
   ===============================================================*/
 

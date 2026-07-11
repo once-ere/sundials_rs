@@ -21,6 +21,10 @@
 /* C `(x > TOL) ? FALSE : TRUE` becomes !(x > TOL) so NaN keeps the C
    comparison semantics (same allow as sundials_core). */
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
+/* C `return B;` inside the .def X-macro arms stays a return statement */
+#![allow(clippy::needless_return)]
+/* Butcher-table coefficients keep the C source's full decimal text */
+#![allow(clippy::excessive_precision)]
 #![forbid(unsafe_code)]
 
 // Shared SUNDIALS core (re-exported so donor `crate::<mod>` paths resolve)
@@ -72,6 +76,8 @@ pub mod arkode_root_impl;
 pub mod arkode_relaxation_impl;
 pub mod arkode_interp_impl;
 pub mod arkode_butcher;
+pub mod arkode_butcher_erk;
+pub mod arkode_butcher_dirk;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
 pub use crate::arkode_impl::*;
