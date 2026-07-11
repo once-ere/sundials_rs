@@ -379,3 +379,53 @@ stack) are appended below as each phase lands.
   indices; dt content void* → enum DtpntContent { Hermite, Polynomial };
   IM fn pointers → dispatch on ca_IMtype; CVodeBMem owns a nested
   Box<CVodeMem> for the backward problem.
+
+## Addendum C — Phase-6 core objects + arkode design contract
+
+Deferred Phase-1 core files (all in sundials_core):
+
+- SUNStepper (sundials_stepper.rs) and SUNAdjointCheckpointScheme
+  (sundials_adjointcheckpointscheme.rs): unlike the enum-dispatch base
+  classes, these keep the C shape of a REGISTRATION table — ops are
+  Option<fn(&mut Self, ...)> fields installed one at a time via the
+  Set*Fn functions; dispatchers return SUN_ERR_NOT_IMPLEMENTED for None.
+  `content` is UserData (Option<Box<dyn Any>>), downcast by the wrapping
+  integrator; GetContent returns &mut UserData.
+- SUNDataNode (sundials_datanode.rs + sundatanode_inmem.rs): base class
+  as enum dispatch (only InMem exists). The Rust tree OWNS its children
+  (SUNStlVector → Vec<SUNDataNode>, SUNHashMap<SUNDataNode> for named
+  children); GetChild/GetNamedChild lend `&mut` borrows where C hands out
+  aliased pointers; RemoveChild/RemoveNamedChild move the child out
+  (C's Erase does not destroy elements); Destroy = drop; the write-only
+  `parent` back-pointer is dropped. Leaf data = SUNMemory byte buffer,
+  C layout [t | N_VBufPack(v)] (N_VBufSize/Pack/Unpack now in
+  nvector_serial.rs).
+- SUNAdjointCheckpointScheme_Fixed (sunadjointcheckpointscheme_fixed.rs):
+  C's cached step-node aliases (current_insert/load_step_node) are
+  re-derived by key lookup from step_num_of_current_insert/_load
+  (key = decimal step number). Where C would UAF (re-loading a step the
+  !keep path consumed), lookup fails → SUN_ERR_CHECKPOINT_NOT_FOUND.
+- SUNAdjointStepper (sundials_adjointstepper.rs): owning Option slots
+  for the fwd/adj SUNSteppers and the checkpoint scheme; own_* flags
+  honored in Destroy; take() a non-owned stepper before Destroy.
+- sundials_errors.rs codes now match the implicit C enum numbering from
+  SUN_ERR_MINIMUM = -10000 exactly (PROFILER/ADJOINT/CHECKPOINT blocks
+  included; profiler re-exports the centralized constants).
+
+arkode crate (arkode_impl.rs, pinned):
+
+- ARKodeMem mirrors the C architecture directly: the time-stepper
+  interface is a table of Option<fn(&mut ARKodeMem, ...)> `step_*`
+  fields installed by each stepper's create routine; `step_mem` is
+  UserData downcast by the owning stepper module (erkstep/arkstep/...).
+- Field `fn` → `fn_` (reserved word; the only renamed ARKodeMem field).
+- `ycur` owns storage (C aliases the user's output vector): ARKodeEvolve
+  must copy back at every return path, like the cvode port's cv_y.
+- `rwt_is_ewt`: rwt is a separate owned vector; arkode.c syncs/reads via
+  helper when the flag is set (no aliasing).
+- Generic ARKInterp (void* content + ops in C) = enum
+  ARKInterp { Hermite, Lagrange } over the arkode_interp_impl.rs
+  contents; dispatchers land in arkode_interp.rs.
+- ARKTimestepGetLinMemFn/GetMassMemFn return Option<&mut UserData>
+  (C returns void*); ARKTimestepGetNonlinearSystemData's out-pointer
+  shape is finalized when arkstep lands.
