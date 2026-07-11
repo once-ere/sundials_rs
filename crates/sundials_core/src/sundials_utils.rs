@@ -113,3 +113,14 @@ mod tests {
         assert_eq!(fmt_g(123.456789, 0, 6), "123.457");
     }
 }
+
+/// sunCompensatedSum (src/sundials/sundials_utils.h): Kahan-style
+/// compensated summation; the C `volatile` temporaries prevent
+/// reassociation, which Rust never performs on floats.
+pub fn sunCompensatedSum(base: f64, inc: f64, sum: &mut f64, error: &mut f64) {
+    let err = *error;
+    let tmp1 = inc - err;
+    let tmp2 = base + tmp1;
+    *error = (tmp2 - base) - tmp1;
+    *sum = tmp2;
+}

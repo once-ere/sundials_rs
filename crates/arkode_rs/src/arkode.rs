@@ -814,6 +814,1736 @@ pub fn arkYddNorm(ark_mem: &mut ARKodeMem, hg: f64, yddnrm: &mut f64) -> i32 {
     ARK_SUCCESS
 }
 
+/*---------------------------------------------------------------
+  ark_rfun_apply_yn:
+
+  Dispatch point for C calls `ark_mem->rfun(ark_mem->yn, w,
+  ark_mem->r_data)` (only reached when !rwt_is_ewt): a user rfun
+  receives user_data, the internal path is arkRwtSet.
+  ---------------------------------------------------------------*/
+pub(crate) fn ark_rfun_apply_yn(ark_mem: &mut ARKodeMem, w: &mut NVector) -> i32 {
+    if ark_mem.user_rfun {
+        let rfun = ark_mem.rfun.unwrap();
+        rfun(&ark_mem.yn, w, &mut ark_mem.user_data)
+    } else {
+        let yn = std::mem::replace(&mut ark_mem.yn, NVector::new(0));
+        let flag = arkRwtSet(ark_mem, &yn, w);
+        ark_mem.yn = yn;
+        flag
+    }
+}
+
+/*---------------------------------------------------------------
+  arkCompleteStep
+
+  This routine performs various update operations when the step
+  solution is complete.  It is assumed that the timestepper
+  module has stored the time-evolved solution in ark_mem->ycur,
+  and the step that gave rise to this solution in ark_mem->h.
+  We update the current time (tn), the current solution (yn),
+  increment the overall step counter nst, record the values hold
+  and tnew, allow for user-provided postprocessing, and update
+  the interpolation structure.
+  ---------------------------------------------------------------*/
+pub fn arkCompleteStep(ark_mem: &mut ARKodeMem, dsm: f64) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ACCUMERROR_MAX, ARK_ACCUMERROR_NONE, ARK_ACCUMERROR_SUM, ARK_CONTROLLER_ERR,
+        ARK_POSTSTEPFN_FAIL, ONE,
+    };
+    use crate::sundials_math::SUNMAX;
+    use crate::sundials_utils::sunCompensatedSum;
+
+    /* Set current time to the end of the step (in case the last stage time
+    does not coincide with the step solution time). If tstop is enabled, it
+    is possible for tn + h to be past tstop by roundoff, and in that case,
+    we reset tn (after incrementing by h) to tstop. */
+
+    /* During long-time integration, roundoff can creep into tcur.
+    Compensated summation fixes this but with increased cost, so it is
+    optional. */
+    if ark_mem.use_compensated_sums {
+        let (tn, h) = (ark_mem.tn, ark_mem.h);
+        sunCompensatedSum(tn, h, &mut ark_mem.tcur, &mut ark_mem.terr);
+    } else {
+        ark_mem.tcur = ark_mem.tn + ark_mem.h;
+    }
+
+    if ark_mem.tstopset {
+        let troundoff =
+            FUZZ_FACTOR * ark_mem.uround * (SUNRabs(ark_mem.tcur) + SUNRabs(ark_mem.h));
+        if SUNRabs(ark_mem.tcur - ark_mem.tstop) <= troundoff {
+            ark_mem.tcur = ark_mem.tstop;
+        }
+    }
+
+    /* store this step's contribution to accumulated temporal error */
+    if ark_mem.AccumErrorType != ARK_ACCUMERROR_NONE {
+        if ark_mem.AccumErrorType == ARK_ACCUMERROR_MAX {
+            ark_mem.AccumError = SUNMAX(dsm, ark_mem.AccumError);
+        } else if ark_mem.AccumErrorType == ARK_ACCUMERROR_SUM {
+            ark_mem.AccumError += dsm;
+        } else {
+            /* ARK_ACCUMERROR_AVG */
+            ark_mem.AccumError += dsm * ark_mem.h;
+        }
+    }
+
+    /* call the user-supplied post-step function (if supplied) */
+    if let Some(post_step_fn) = ark_mem.PostStepFn {
+        let retval = post_step_fn(
+            ark_mem.tcur,
+            &ark_mem.ycur,
+            ark_mem.nst,
+            &mut ark_mem.user_data,
+        );
+        if retval != 0 {
+            return ARK_POSTSTEPFN_FAIL;
+        }
+    }
+
+    /* update interpolation structure
+
+    NOTE: This must be called before updating yn with ycur as the
+    interpolation module may need to save tn, yn from the start of this
+    step. */
+    if ark_mem.interp.is_some() {
+        let retval = crate::arkode_interp::arkInterpUpdate(ark_mem, ark_mem.tcur);
+        if retval != ARK_SUCCESS {
+            return retval;
+        }
+    }
+
+    /* update yn to current solution */
+    {
+        let ycur = std::mem::replace(&mut ark_mem.ycur, NVector::new(0));
+        crate::nvector_serial::N_VScale(ONE, &ycur, &mut ark_mem.yn);
+        ark_mem.ycur = ycur;
+    }
+    ark_mem.fn_is_current = false;
+
+    /* Notify time step controller object of successful step */
+    let (h, _eta) = (ark_mem.h, ark_mem.eta);
+    if ark_mem.hadapt_mem.as_ref().unwrap().hcontroller.is_some() {
+        let hc = ark_mem
+            .hadapt_mem
+            .as_mut()
+            .unwrap()
+            .hcontroller
+            .as_mut()
+            .unwrap();
+        let retval = crate::sundials_adaptcontroller::SUNAdaptController_UpdateH(hc, h, dsm);
+        if retval != crate::sundials_errors::SUN_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_CONTROLLER_ERR,
+                line!(),
+                "arkCompleteStep",
+                file!(),
+                "Failure updating controller object",
+            );
+            return ARK_CONTROLLER_ERR;
+        }
+    }
+
+    /* update scalar quantities */
+    ark_mem.nst += 1;
+    ark_mem.checkpoint_step_idx += 1;
+    ark_mem.hold = ark_mem.h;
+    ark_mem.tn = ark_mem.tcur;
+    ark_mem.hprime = ark_mem.h * ark_mem.eta;
+
+    /* Reset growth factor for subsequent time step */
+    {
+        let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+        hadapt_mem.etamax = hadapt_mem.growth;
+    }
+
+    /* Turn off flag indicating initial step and first stage */
+    ark_mem.initsetup = false;
+    ark_mem.firststage = false;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkHandleFailure
+
+  This routine prints error messages for all cases of failure by
+  arkHin and ark_step. It returns to ARKODE the value that ARKODE
+  is to return to the user.
+  ---------------------------------------------------------------*/
+pub fn arkHandleFailure(ark_mem: &mut ARKodeMem, flag: i32) -> i32 {
+    use crate::arkode_impl::*;
+
+    let t = fmt_g(ark_mem.tcur, 0, 15);
+    let h = fmt_g(ark_mem.h, 0, 15);
+
+    /* Depending on flag, print error message and return error flag */
+    let msg: String = match flag {
+        ARK_ERR_FAILURE => format!(
+            "At t = {} and h = {}, the error test failed repeatedly or with |h| = hmin.",
+            t, h
+        ),
+        ARK_CONV_FAILURE => format!(
+            "At t = {} and h = {}, the solver convergence test failed repeatedly or with |h| = hmin.",
+            t, h
+        ),
+        ARK_LSETUP_FAIL => {
+            format!("At t = {}, the setup routine failed in an unrecoverable manner.", t)
+        }
+        ARK_LSOLVE_FAIL => {
+            format!("At t = {}, the solve routine failed in an unrecoverable manner.", t)
+        }
+        ARK_RHSFUNC_FAIL => format!(
+            "At t = {}, the right-hand side routine failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_UNREC_RHSFUNC_ERR => format!(
+            "At t = {}, the right-hand side failed in a recoverable manner, but no recovery is possible.",
+            t
+        ),
+        ARK_REPTD_RHSFUNC_ERR => {
+            format!("At t = {} repeated recoverable right-hand side function errors.", t)
+        }
+        ARK_RTFUNC_FAIL => format!(
+            "At t = {}, the rootfinding routine failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_TOO_CLOSE => "tout too close to t0 to start integration.".to_string(),
+        ARK_CONSTR_FAIL => {
+            format!("At t = {}, unable to satisfy inequality constraints.", t)
+        }
+        ARK_MASSSOLVE_FAIL => "The mass matrix solver failed.".to_string(),
+        ARK_NLS_SETUP_FAIL => {
+            format!("At t = {} the nonlinear solver setup failed unrecoverably", t)
+        }
+        ARK_VECTOROP_ERR => format!("At t = {}, a vector operation failed.", t),
+        ARK_INNERSTEP_FAIL => {
+            format!("At t = {}, the inner stepper failed in an unrecoverable manner.", t)
+        }
+        ARK_NLS_OP_ERR => {
+            format!("At t = {} the nonlinear solver failed in an unrecoverable manner.", t)
+        }
+        ARK_USER_PREDICT_FAIL => format!(
+            "At t = {} the user-supplied predictor failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_POSTPROCESS_STEP_FAIL => format!(
+            "At t = {}, the step postprocessing routine failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_POSTPROCESS_STAGE_FAIL => format!(
+            "At t = {}, the stage postprocessing routine failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_PRESTEPFN_FAIL => format!(
+            "At t = {}, the pre-step function failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_POSTSTEPFN_FAIL => format!(
+            "At t = {}, the post-step function failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_PRERHSFN_FAIL => format!(
+            "At t = {}, the pre-RHS function failed in an unrecoverable manner.",
+            t
+        ),
+        ARK_INTERP_FAIL => {
+            format!("At t = {} the interpolation module failed unrecoverably", t)
+        }
+        ARK_INVALID_TABLE => "ARKODE was provided an invalid method table".to_string(),
+        ARK_RELAX_FAIL => format!("At t = {} the relaxation module failed", t),
+        ARK_RELAX_MEM_NULL => "The ARKODE relaxation module memory is NULL".to_string(),
+        ARK_RELAX_FUNC_FAIL => "The relaxation function failed unrecoverably".to_string(),
+        ARK_RELAX_JAC_FAIL => "The relaxation Jacobian failed unrecoverably".to_string(),
+        ARK_ADJ_RECOMPUTE_FAIL => {
+            "The forward recomputation of step failed unrecoverably".to_string()
+        }
+        ARK_ADJ_CHECKPOINT_FAIL => "A checkpoint operation failed unrecoverably".to_string(),
+        ARK_SUNADJSTEPPER_ERR => {
+            "A SUNAdjStepper operation failed unrecoverably".to_string()
+        }
+        ARK_DOMEIG_FAIL => "The dominant eigenvalue function failed unrecoverably".to_string(),
+        ARK_MAX_STAGE_LIMIT_FAIL => "The max stage limit failed unrecoverably".to_string(),
+        ARK_SUNSTEPPER_ERR => "An inner SUNStepper error occurred".to_string(),
+        _ => {
+            /* This return should never happen */
+            arkProcessError(
+                Some(ark_mem),
+                ARK_UNRECOGNIZED_ERROR,
+                line!(),
+                "arkHandleFailure",
+                file!(),
+                "ARKODE encountered an unrecognized error. Please report this to the \
+                 Sundials developers at sundials-users@llnl.gov",
+            );
+            return ARK_UNRECOGNIZED_ERROR;
+        }
+    };
+    arkProcessError(Some(ark_mem), flag, line!(), "arkHandleFailure", file!(), &msg);
+
+    flag
+}
+
+/*---------------------------------------------------------------
+  arkCheckConvergence
+
+  This routine checks the return flag from the time-stepper module
+  and handles solver convergence failures (see the C source for
+  the full description).
+  ---------------------------------------------------------------*/
+pub fn arkCheckConvergence(ark_mem: &mut ARKodeMem, nflagPtr: &mut i32, ncfPtr: &mut i32) -> i32 {
+    use crate::arkode_impl::{
+        ARK_CONV_FAILURE, ARK_LSETUP_FAIL, ARK_LSOLVE_FAIL, ARK_MEM_NULL,
+        ARK_REPTD_RHSFUNC_ERR, ARK_RETRY_STEP, ARK_RHSFUNC_FAIL, CONV_FAIL, MSG_ARKADAPT_NO_MEM,
+        ONE, ONEPSM, PREDICT_AGAIN, PREV_CONV_FAIL, RHSFUNC_RECVR,
+    };
+
+    /* If nonlinear solver succeeded, return with ARK_SUCCESS */
+    if *nflagPtr == ARK_SUCCESS {
+        return ARK_SUCCESS;
+    }
+    /* Returns with an ARK_RETRY_STEP flag occur at a stage well before any
+    algebraic solvers are involved. On the other hand, the
+    arkCheckConvergence function handles the results from algebraic solvers,
+    which never take place with an ARK_RETRY_STEP flag. Therefore, we
+    immediately return from arkCheckConvergence, as it is irrelevant in the
+    case of an ARK_RETRY_STEP */
+    if *nflagPtr == ARK_RETRY_STEP {
+        return ARK_RETRY_STEP;
+    }
+
+    /* The nonlinear soln. failed; increment ncfn */
+    ark_mem.ncfn += 1;
+
+    /* If fixed time stepping, then return with convergence failure */
+    if ark_mem.fixedstep {
+        return ARK_CONV_FAILURE;
+    }
+
+    /* Otherwise, access adaptivity structure */
+    if ark_mem.hadapt_mem.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "arkCheckConvergence",
+            file!(),
+            MSG_ARKADAPT_NO_MEM,
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* Return if lsetup, lsolve, or rhs failed unrecoverably */
+    if *nflagPtr < 0 {
+        if *nflagPtr == ARK_LSETUP_FAIL {
+            return ARK_LSETUP_FAIL;
+        } else if *nflagPtr == ARK_LSOLVE_FAIL {
+            return ARK_LSOLVE_FAIL;
+        } else if *nflagPtr == ARK_RHSFUNC_FAIL {
+            return ARK_RHSFUNC_FAIL;
+        } else {
+            return crate::arkode_impl::ARK_NLS_OP_ERR;
+        }
+    }
+
+    /* At this point, nflag = CONV_FAIL or RHSFUNC_RECVR; increment ncf */
+    *ncfPtr += 1;
+    ark_mem.hadapt_mem.as_mut().unwrap().etamax = ONE;
+
+    /* If we had maxncf failures, or if |h| = hmin,
+    return ARK_CONV_FAILURE or ARK_REPTD_RHSFUNC_ERR. */
+    if (*ncfPtr == ark_mem.maxncf) || (SUNRabs(ark_mem.h) <= ark_mem.hmin * ONEPSM) {
+        if *nflagPtr == CONV_FAIL {
+            return ARK_CONV_FAILURE;
+        }
+        if *nflagPtr == RHSFUNC_RECVR {
+            return ARK_REPTD_RHSFUNC_ERR;
+        }
+    }
+
+    /* Reduce step size due to convergence failure */
+    ark_mem.eta = ark_mem.hadapt_mem.as_ref().unwrap().etacf;
+
+    /* Signal for Jacobian/preconditioner setup */
+    *nflagPtr = PREV_CONV_FAIL;
+
+    /* Return to reattempt the step */
+    PREDICT_AGAIN
+}
+
+/*---------------------------------------------------------------
+  arkCheckConstraints
+
+  This routine determines if the constraints of the problem
+  are satisfied by the proposed step
+
+  Returns ARK_SUCCESS if successful, otherwise CONSTR_RECVR
+  --------------------------------------------------------------*/
+pub fn arkCheckConstraints(ark_mem: &mut ARKodeMem, constrfails: &mut i32, nflag: &mut i32) -> i32 {
+    use crate::arkode_impl::{
+        ARK_CONSTR_FAIL, CONSTR_RECVR, ONE, ONEPSM, PREV_CONV_FAIL, TENTH,
+    };
+    use crate::nvector_serial::{N_VConstrMask, N_VLinearSum, N_VMinQuotient};
+    use crate::sundials_math::SUNMAX;
+
+    /* Check constraints and get mask vector mm (tempv4) for where
+    constraints failed */
+    let constraints_passed = N_VConstrMask(
+        ark_mem.constraints.as_ref().unwrap(),
+        &ark_mem.ycur,
+        &mut ark_mem.tempv4,
+    );
+    if constraints_passed {
+        return ARK_SUCCESS;
+    }
+
+    /* Constraints not met */
+
+    /* Update total fails and fails in current step */
+    ark_mem.nconstrfails += 1;
+    *constrfails += 1;
+
+    /* Return with error if reached max fails in a step */
+    if *constrfails == ark_mem.maxconstrfails {
+        return ARK_CONSTR_FAIL;
+    }
+
+    /* Return with error if using fixed step sizes */
+    if ark_mem.fixedstep {
+        return ARK_CONSTR_FAIL;
+    }
+
+    /* Return with error if |h| == hmin */
+    if SUNRabs(ark_mem.h) <= ark_mem.hmin * ONEPSM {
+        return ARK_CONSTR_FAIL;
+    }
+
+    /* Reduce h by computing eta = h'/h */
+    N_VLinearSum(ONE, &ark_mem.yn, -ONE, &ark_mem.ycur, &mut ark_mem.tempv3);
+    /* N_VProd(mm, tmp, tmp): output aliases the second operand;
+    z[i] = x[i]*y[i] with y == z (multiplication commutes bit-exactly) */
+    for k in 0..ark_mem.tempv3.data.len() {
+        ark_mem.tempv3.data[k] *= ark_mem.tempv4.data[k];
+    }
+    ark_mem.eta = 0.9 * N_VMinQuotient(&ark_mem.yn, &ark_mem.tempv3);
+    ark_mem.eta = SUNMAX(ark_mem.eta, TENTH);
+
+    /* Signal for Jacobian/preconditioner setup */
+    *nflag = PREV_CONV_FAIL;
+
+    /* Return to reattempt the step */
+    CONSTR_RECVR
+}
+
+/*---------------------------------------------------------------
+  arkCheckTemporalError
+
+  This routine performs the local error test for the method (see
+  the C source for the full description).
+  --------------------------------------------------------------*/
+pub fn arkCheckTemporalError(
+    ark_mem: &mut ARKodeMem,
+    nflagPtr: &mut i32,
+    nefPtr: &mut i32,
+    dsm: f64,
+) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ERR_FAILURE, ARK_MEM_NULL, MSG_ARKADAPT_NO_MEM, ONE, PREV_ERR_FAIL, TRY_AGAIN,
+    };
+    use crate::sundials_math::{SUNMAX, SUNMIN};
+
+    /* Access hadapt_mem structure */
+    if ark_mem.hadapt_mem.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "arkCheckTemporalError",
+            file!(),
+            MSG_ARKADAPT_NO_MEM,
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* consider change of step size for next step attempt (may be
+    larger/smaller than current step, depending on dsm) */
+    let ttmp = if dsm <= ONE {
+        ark_mem.tn + ark_mem.h
+    } else {
+        ark_mem.tn
+    };
+    let (h, hmin, hmax_inv) = (ark_mem.h, ark_mem.hmin, ark_mem.hmax_inv);
+    let retval = crate::arkode_adapt::arkAdapt(ark_mem, ttmp, h, dsm);
+    if retval != ARK_SUCCESS {
+        return ARK_ERR_FAILURE;
+    }
+
+    /* if we've made it here then no nonrecoverable failures occurred;
+    someone above has recommended an 'eta' value for the next step --
+    enforce bounds on that value and set upcoming step size */
+    ark_mem.eta = SUNMIN(ark_mem.eta, ark_mem.hadapt_mem.as_ref().unwrap().etamax);
+    ark_mem.eta = SUNMAX(ark_mem.eta, hmin / SUNRabs(h));
+    ark_mem.eta /= SUNMAX(ONE, SUNRabs(h) * hmax_inv * ark_mem.eta);
+
+    /* If est. local error norm dsm passes test, return ARK_SUCCESS */
+    if dsm <= ONE {
+        return ARK_SUCCESS;
+    }
+
+    /* Test failed; increment counters, set nflag */
+    *nefPtr += 1;
+    ark_mem.netf += 1;
+    *nflagPtr = PREV_ERR_FAIL;
+
+    /* At maxnef failures, return ARK_ERR_FAILURE */
+    if *nefPtr == ark_mem.maxnef {
+        return ARK_ERR_FAILURE;
+    }
+
+    /* Set etamax=1 to prevent step size increase at end of this step */
+    ark_mem.hadapt_mem.as_mut().unwrap().etamax = ONE;
+
+    /* Enforce failure bounds on eta */
+    if *nefPtr >= ark_mem.hadapt_mem.as_ref().unwrap().small_nef {
+        ark_mem.eta = SUNMIN(ark_mem.eta, ark_mem.hadapt_mem.as_ref().unwrap().etamxf);
+    }
+
+    /* Enforce min/max step bounds once again due to adjustments above */
+    ark_mem.eta = SUNMIN(ark_mem.eta, ark_mem.hadapt_mem.as_ref().unwrap().etamax);
+    ark_mem.eta = SUNMAX(ark_mem.eta, hmin / SUNRabs(h));
+    ark_mem.eta /= SUNMAX(ONE, SUNRabs(h) * hmax_inv * ark_mem.eta);
+
+    TRY_AGAIN
+}
+
+/*---------------------------------------------------------------
+  arkInitialSetup
+
+  This routine performs all necessary items to prepare ARKODE for
+  the first internal step after initialization, reinitialization,
+  a reset() call, or a resize() call, including:
+  - input consistency checks
+  - (re)initializes the stepper
+  - computes error and residual weights
+  - (re)initialize the interpolation structure
+  - checks for valid initial step input or estimates first step
+  - checks for approach to tstop
+  - checks for root near t0
+  ---------------------------------------------------------------*/
+pub fn arkInitialSetup(ark_mem: &mut ARKodeMem, tout: f64) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ILL_INPUT, ARK_INTERP_LAGRANGE, ARK_INTERP_NONE, ARK_STEP_H0_FAIL,
+        ARK_TOO_CLOSE, ARK_WF, FOUR, MSG_ARK_MISSING_FULLRHS, ONE, TWO,
+    };
+    use crate::nvector_serial::N_VConstrMask;
+    use crate::sundials_math::SUNMAX;
+
+    /* Is tout too close to tn? */
+    let tdist = SUNRabs(tout - ark_mem.tcur);
+    let tround = ark_mem.uround * SUNMAX(SUNRabs(ark_mem.tcur), SUNRabs(tout));
+
+    if tdist == ZERO || tdist < TWO * tround {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_TOO_CLOSE,
+            line!(),
+            "arkInitialSetup",
+            file!(),
+            "tout too close to t0 to start integration.",
+        );
+        return ARK_TOO_CLOSE;
+    }
+
+    /* Check that user has supplied an initial step size if fixedstep mode is
+    on */
+    if ark_mem.fixedstep && ark_mem.hin == ZERO {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "arkInitialSetup",
+            file!(),
+            "Fixed step mode enabled, but no step size set",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* Optional N_Vector checks always pass in the serial build */
+
+    /* Test input tstop for legality (correct direction of integration) */
+    if ark_mem.tstopset {
+        let htmp = if ark_mem.h == ZERO {
+            tout - ark_mem.tcur
+        } else {
+            ark_mem.h
+        };
+        if (ark_mem.tstop - ark_mem.tcur) * htmp <= ZERO {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                &format!(
+                    "The value tstop = {} is behind current t = {} in the direction of integration.",
+                    fmt_g(ark_mem.tstop, 0, 15),
+                    fmt_g(ark_mem.tcur, 0, 15)
+                ),
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* Check to see if y0 satisfies constraints */
+    if let Some(constraints) = ark_mem.constraints.as_ref() {
+        let con_ok = N_VConstrMask(constraints, &ark_mem.yn, &mut ark_mem.tempv1);
+        if !con_ok {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "y0 fails to satisfy constraints.",
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* Load initial error weights */
+    {
+        let mut ewt = std::mem::replace(&mut ark_mem.ewt, NVector::new(0));
+        let retval = ark_efun_apply_yn(ark_mem, &mut ewt);
+        ark_mem.ewt = ewt;
+        if retval != 0 {
+            if ark_mem.itol == ARK_WF {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_ILL_INPUT,
+                    line!(),
+                    "arkInitialSetup",
+                    file!(),
+                    "The user-provide EwtSet function failed.",
+                );
+            } else {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_ILL_INPUT,
+                    line!(),
+                    "arkInitialSetup",
+                    file!(),
+                    "Initial ewt has component(s) equal to zero (illegal).",
+                );
+            }
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* Set up the time stepper module if not done so already */
+    if !ark_mem.preallocated {
+        if ark_mem.step_init.is_none() {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "Time stepper module is missing",
+            );
+            return ARK_ILL_INPUT;
+        }
+        let step_init = ark_mem.step_init.unwrap();
+        let retval = step_init(ark_mem, ark_mem.init_type);
+        if retval != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                retval,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "Error in initialization of time stepper module",
+            );
+            return retval;
+        }
+    }
+
+    /* Load initial residual weights */
+    if ark_mem.rwt_is_ewt {
+        /* C updates the rwt pointer to ewt; readers dispatch on the flag */
+    } else {
+        let mut rwt = std::mem::replace(&mut ark_mem.rwt, NVector::new(0));
+        let retval = ark_rfun_apply_yn(ark_mem, &mut rwt);
+        ark_mem.rwt = rwt;
+        if retval != 0 {
+            if ark_mem.itol == ARK_WF {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_ILL_INPUT,
+                    line!(),
+                    "arkInitialSetup",
+                    file!(),
+                    "The user-provide RwtSet function failed.",
+                );
+            } else {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_ILL_INPUT,
+                    line!(),
+                    "arkInitialSetup",
+                    file!(),
+                    "Initial rwt has component(s) equal to zero (illegal).",
+                );
+            }
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* Create default interpolation module (if needed) */
+    if ark_mem.interp_type != ARK_INTERP_NONE && ark_mem.interp.is_none() {
+        ark_mem.interp = if ark_mem.interp_type == ARK_INTERP_LAGRANGE {
+            crate::arkode_interp::arkInterpCreate_Lagrange(ark_mem, ark_mem.interp_degree)
+        } else {
+            crate::arkode_interp::arkInterpCreate_Hermite(ark_mem, ark_mem.interp_degree)
+        };
+        if ark_mem.interp.is_none() {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_FAIL,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "Unable to allocate interpolation module",
+            );
+            return ARK_MEM_FAIL;
+        }
+    }
+
+    /* Fill initial interpolation data (if needed) */
+    if ark_mem.interp.is_some() {
+        /* Stepper init may have limited the interpolation degree */
+        if crate::arkode_interp::arkInterpSetDegree(ark_mem, ark_mem.interp_degree) != 0 {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "Unable to update interpolation polynomial degree",
+            );
+            return ARK_ILL_INPUT;
+        }
+
+        if crate::arkode_interp::arkInterpInit(ark_mem, ark_mem.tcur) != 0 {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "Unable to initialize interpolation module",
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* Check if the configuration requires interpolation */
+    if ark_mem.root_mem.is_some() && ark_mem.interp.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "arkInitialSetup",
+            file!(),
+            "Rootfinding requires an interpolation module",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    if ark_mem.tstopinterp && ark_mem.interp.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "arkInitialSetup",
+            file!(),
+            "Stop time interpolation requires an interpolation module",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* Call stepper-provided initial step size estimation routine to fill
+    ark_mem->hin, if applicable. */
+    if ark_mem.h0u == ZERO && ark_mem.hin == ZERO && !ark_mem.fixedstep
+        && ark_mem.step_H0.is_some()
+    {
+        let step_h0 = ark_mem.step_H0.unwrap();
+        let mut hin = ark_mem.hin;
+        let retval = step_h0(ark_mem, tout, &mut hin);
+        ark_mem.hin = hin;
+        if retval != 0 {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_STEP_H0_FAIL,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "Failure in timestepping module h0 calculation",
+            );
+            return ARK_STEP_H0_FAIL;
+        }
+    }
+
+    /* If fullrhs will be called (to estimate initial step, explicit
+    steppers, Hermite interpolation module, and possibly (but not always)
+    arkRootCheck1), then ensure that it is provided, and space is allocated
+    for fn.  Otherwise, we should free ark_mem->fn if it is allocated. */
+    if ark_mem.call_fullrhs || (ark_mem.h0u == ZERO && ark_mem.hin == ZERO)
+        || ark_mem.root_mem.is_some()
+    {
+        if ark_mem.step_fullrhs.is_none() {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                MSG_ARK_MISSING_FULLRHS,
+            );
+            return ARK_ILL_INPUT;
+        }
+
+        let yn_len = ark_mem.yn.data.len();
+        let mut fn_ = std::mem::replace(&mut ark_mem.fn_, NVector::new(0));
+        arkAllocVec(ark_mem, yn_len, &mut fn_);
+        ark_mem.fn_ = fn_;
+    } else if !ark_mem.fn_.data.is_empty() {
+        let mut fn_ = std::mem::replace(&mut ark_mem.fn_, NVector::new(0));
+        arkFreeVec(ark_mem, &mut fn_);
+        ark_mem.fn_ = fn_;
+    }
+
+    /* initialization complete */
+    ark_mem.initialized = true;
+
+    /* Set initial step size */
+    if ark_mem.h0u == ZERO {
+        /* Check input h for validity */
+        ark_mem.h = ark_mem.hin;
+        if (ark_mem.h != ZERO) && ((tout - ark_mem.tcur) * ark_mem.h < ZERO) {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkInitialSetup",
+                file!(),
+                "h0 and tout - t0 inconsistent.",
+            );
+            return ARK_ILL_INPUT;
+        }
+
+        /* Estimate initial h if not set */
+        if ark_mem.h == ZERO {
+            /* If necessary, temporarily set h as it is used to compute the
+            tolerance in a potential mass matrix solve when computing the
+            full rhs */
+            ark_mem.h = SUNRabs(tout - ark_mem.tcur);
+            if ark_mem.h == ZERO {
+                ark_mem.h = ONE;
+            }
+
+            /* Estimate the first step size */
+            let mut tout_hin = tout;
+            if ark_mem.tstopset && (tout - ark_mem.tcur) * (tout - ark_mem.tstop) > ZERO {
+                tout_hin = ark_mem.tstop;
+            }
+            let hflag = arkHin(ark_mem, tout_hin);
+            if hflag != ARK_SUCCESS {
+                return arkHandleFailure(ark_mem, hflag);
+            }
+
+            /* Use first step growth factor for estimated h */
+            let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+            hadapt_mem.etamax = hadapt_mem.etamx1;
+        } else if ark_mem.nst == 0 {
+            /* Use first step growth factor for user defined h */
+            let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+            hadapt_mem.etamax = hadapt_mem.etamx1;
+        } else {
+            /* Use standard growth factor (e.g., for reset) */
+            let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+            hadapt_mem.etamax = hadapt_mem.growth;
+        }
+
+        /* Enforce step size bounds */
+        let rh = SUNRabs(ark_mem.h) * ark_mem.hmax_inv;
+        if rh > ONE {
+            ark_mem.h /= rh;
+        }
+        if SUNRabs(ark_mem.h) < ark_mem.hmin {
+            ark_mem.h *= ark_mem.hmin / SUNRabs(ark_mem.h);
+        }
+
+        /* Check for approach to tstop */
+        if ark_mem.tstopset {
+            if (ark_mem.tcur + ark_mem.h - ark_mem.tstop) * ark_mem.h > ZERO {
+                ark_mem.h =
+                    (ark_mem.tstop - ark_mem.tcur) * (ONE - FOUR * ark_mem.uround);
+            }
+        }
+
+        /* Set initial time step factors */
+        ark_mem.h0u = ark_mem.h;
+        ark_mem.eta = ONE;
+        ark_mem.hprime = ark_mem.h;
+    } else {
+        /* If next step would overtake tstop, adjust stepsize */
+        if ark_mem.tstopset {
+            if (ark_mem.tcur + ark_mem.hprime - ark_mem.tstop) * ark_mem.h > ZERO {
+                ark_mem.hprime =
+                    (ark_mem.tstop - ark_mem.tcur) * (ONE - FOUR * ark_mem.uround);
+                ark_mem.eta = ark_mem.hprime / ark_mem.h;
+            }
+        }
+    }
+
+    /* Check for zeros of root function g at and near t0. */
+    if ark_mem.root_mem.is_some() {
+        if ark_mem.root_mem.as_ref().unwrap().nrtfn > 0 {
+            let retval = crate::arkode_root::arkRootCheck1(ark_mem);
+            if retval != ARK_SUCCESS {
+                return retval;
+            }
+        }
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkStopTests
+
+  This routine performs relevant stopping tests:
+  - check for root in last step
+  - check if we passed tstop
+  - check if we passed tout (NORMAL mode)
+  - check if current tn was returned (ONE_STEP mode)
+  - check if we are close to tstop (adjust step size if needed)
+
+  Returns 1 (with *ier set) if the Evolve loop should return to
+  the user, 0 to continue.
+  ---------------------------------------------------------------*/
+pub fn arkStopTests(
+    ark_mem: &mut ARKodeMem,
+    tout: f64,
+    yout: &mut NVector,
+    tret: &mut f64,
+    itask: i32,
+    ier: &mut i32,
+) -> i32 {
+    use crate::arkode_impl::{
+        ARK_FULLRHS_END, ARK_ILL_INPUT, ARK_NORMAL, ARK_ONE_STEP, ARK_RHSFUNC_FAIL,
+        ARK_ROOT_RETURN, ARK_RTFUNC_FAIL, ARK_TSTOP_RETURN, CLOSERT, FOUR, ONE, RTFOUND,
+    };
+    use crate::nvector_serial::N_VScale;
+
+    /* Estimate an infinitesimal time interval to be used as a roundoff for
+    time quantities (based on current time and step size) */
+    let troundoff =
+        FUZZ_FACTOR * ark_mem.uround * (SUNRabs(ark_mem.tcur) + SUNRabs(ark_mem.h));
+
+    /* First, check for a root in the last step taken, other than the last
+    root found, if any.  If itask = ARK_ONE_STEP and y(tn) was not returned
+    because of an intervening root, return y(tn) now.     */
+    if ark_mem.root_mem.is_some() {
+        if ark_mem.root_mem.as_ref().unwrap().nrtfn > 0 {
+            /* Shortcut to roots found in previous step */
+            let irfndp = ark_mem.root_mem.as_ref().unwrap().irfnd;
+
+            /* If the full RHS was not computed in the last call to
+            arkCompleteStep and roots were found in the previous step, then
+            compute the full rhs for possible use in arkRootCheck2 (not
+            always necessary) */
+            if !ark_mem.fn_is_current && irfndp != 0 {
+                let retval = crate::arkode_impl::ark_step_fullrhs_yn_fn(
+                    ark_mem,
+                    ark_mem.tn,
+                    ARK_FULLRHS_END,
+                );
+                if retval != 0 {
+                    arkProcessError(
+                        Some(ark_mem),
+                        ARK_RHSFUNC_FAIL,
+                        line!(),
+                        "arkStopTests",
+                        file!(),
+                        "The right-hand side routine failed in an unrecoverable manner.",
+                    );
+                    *ier = ARK_RHSFUNC_FAIL;
+                    return 1;
+                }
+                ark_mem.fn_is_current = true;
+            }
+
+            let retval = crate::arkode_root::arkRootCheck2(ark_mem);
+
+            if retval == CLOSERT {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_ILL_INPUT,
+                    line!(),
+                    "arkStopTests",
+                    file!(),
+                    &format!(
+                        "Root found at and very near t = {}.",
+                        fmt_g(ark_mem.root_mem.as_ref().unwrap().tlo, 0, 15)
+                    ),
+                );
+                *ier = ARK_ILL_INPUT;
+                return 1;
+            } else if retval == ARK_RTFUNC_FAIL {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_RTFUNC_FAIL,
+                    line!(),
+                    "arkStopTests",
+                    file!(),
+                    &format!(
+                        "At t = {}, the rootfinding routine failed in an unrecoverable manner.",
+                        fmt_g(ark_mem.root_mem.as_ref().unwrap().tlo, 0, 15)
+                    ),
+                );
+                *ier = ARK_RTFUNC_FAIL;
+                return 1;
+            } else if retval == RTFOUND {
+                let tlo = ark_mem.root_mem.as_ref().unwrap().tlo;
+                ark_mem.tretlast = tlo;
+                *tret = tlo;
+                /* C: yout aliases ycur, which holds the Check2 probe state */
+                N_VScale(ONE, &ark_mem.ycur, yout);
+                *ier = ARK_ROOT_RETURN;
+                return 1;
+            }
+
+            /* If tn is distinct from tretlast (within roundoff), check
+            remaining interval for roots */
+            if SUNRabs(ark_mem.tcur - ark_mem.tretlast) > troundoff {
+                let retval = crate::arkode_root::arkRootCheck3(ark_mem, tout, itask);
+
+                if retval == ARK_SUCCESS {
+                    /* no root found */
+                    ark_mem.root_mem.as_mut().unwrap().irfnd = 0;
+                    if (irfndp == 1) && (itask == ARK_ONE_STEP) {
+                        ark_mem.tretlast = ark_mem.tcur;
+                        *tret = ark_mem.tcur;
+                        N_VScale(ONE, &ark_mem.yn, yout);
+                        *ier = ARK_SUCCESS;
+                        return 1;
+                    }
+                } else if retval == RTFOUND {
+                    /* a new root was found */
+                    ark_mem.root_mem.as_mut().unwrap().irfnd = 1;
+                    let tlo = ark_mem.root_mem.as_ref().unwrap().tlo;
+                    ark_mem.tretlast = tlo;
+                    *tret = tlo;
+                    /* C: yout aliases ycur = y(trout) from arkRootCheck3 */
+                    N_VScale(ONE, &ark_mem.ycur, yout);
+                    *ier = ARK_ROOT_RETURN;
+                    return 1;
+                } else if retval == ARK_RTFUNC_FAIL {
+                    /* g failed */
+                    arkProcessError(
+                        Some(ark_mem),
+                        ARK_RTFUNC_FAIL,
+                        line!(),
+                        "arkStopTests",
+                        file!(),
+                        &format!(
+                            "At t = {}, the rootfinding routine failed in an unrecoverable manner.",
+                            fmt_g(ark_mem.root_mem.as_ref().unwrap().tlo, 0, 15)
+                        ),
+                    );
+                    *ier = ARK_RTFUNC_FAIL;
+                    return 1;
+                }
+            }
+        } /* end of root stop check */
+    }
+
+    /* Test for tn at tstop or near tstop */
+    if ark_mem.tstopset {
+        if SUNRabs(ark_mem.tcur - ark_mem.tstop) <= troundoff {
+            /* Ensure tout >= tstop, otherwise check for tout return below */
+            if (tout - ark_mem.tstop) * ark_mem.h >= ZERO
+                || SUNRabs(tout - ark_mem.tstop) <= troundoff
+            {
+                if ark_mem.tstopinterp && ark_mem.interp.is_some() {
+                    *ier = ARKodeGetDky(ark_mem, ark_mem.tstop, 0, yout);
+                    if *ier != ARK_SUCCESS {
+                        arkProcessError(
+                            Some(ark_mem),
+                            ARK_ILL_INPUT,
+                            line!(),
+                            "arkStopTests",
+                            file!(),
+                            &format!(
+                                "The value tstop = {} is behind current t = {} in the direction of integration.",
+                                fmt_g(ark_mem.tstop, 0, 15),
+                                fmt_g(ark_mem.tcur, 0, 15)
+                            ),
+                        );
+                        *ier = ARK_ILL_INPUT;
+                        return 1;
+                    }
+                } else {
+                    N_VScale(ONE, &ark_mem.yn, yout);
+                }
+                ark_mem.tretlast = ark_mem.tstop;
+                *tret = ark_mem.tstop;
+                ark_mem.tstopset = false;
+                *ier = ARK_TSTOP_RETURN;
+                return 1;
+            }
+        }
+        /* If next step would overtake tstop, adjust stepsize */
+        else if (ark_mem.tcur + ark_mem.hprime - ark_mem.tstop) * ark_mem.h > ZERO {
+            ark_mem.hprime =
+                (ark_mem.tstop - ark_mem.tcur) * (ONE - FOUR * ark_mem.uround);
+            ark_mem.eta = ark_mem.hprime / ark_mem.h;
+        }
+    }
+
+    /* In ARK_NORMAL mode, test if tout was reached */
+    if (itask == ARK_NORMAL) && ((ark_mem.tcur - tout) * ark_mem.h >= ZERO) {
+        if ark_mem.interp.is_some() {
+            *ier = ARKodeGetDky(ark_mem, tout, 0, yout);
+            if *ier != ARK_SUCCESS {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_ILL_INPUT,
+                    line!(),
+                    "arkStopTests",
+                    file!(),
+                    &format!(
+                        "Trouble interpolating at tout = {}. tout too far back in direction of integration",
+                        fmt_g(tout, 0, 15)
+                    ),
+                );
+                *ier = ARK_ILL_INPUT;
+                return 1;
+            }
+            ark_mem.tretlast = tout;
+            *tret = tout;
+        } else {
+            N_VScale(ONE, &ark_mem.yn, yout);
+            ark_mem.tretlast = ark_mem.tcur;
+            *tret = ark_mem.tcur;
+        }
+        *ier = ARK_SUCCESS;
+        return 1;
+    }
+
+    /* In ARK_ONE_STEP mode, test if tn was returned */
+    if itask == ARK_ONE_STEP && SUNRabs(ark_mem.tcur - ark_mem.tretlast) > troundoff {
+        ark_mem.tretlast = ark_mem.tcur;
+        *tret = ark_mem.tcur;
+        N_VScale(ONE, &ark_mem.yn, yout);
+        *ier = ARK_SUCCESS;
+        return 1;
+    }
+
+    0
+}
+
+/*---------------------------------------------------------------
+  ARKodeEvolve:
+
+  This routine is the main driver of ARKODE-based integrators.
+
+  It integrates over a time interval defined by the user, by
+  calling the time step module to do internal time steps.
+
+  The first time that ARKodeEvolve is called for a successfully
+  initialized problem, it computes a tentative initial step size.
+
+  ARKodeEvolve supports two modes as specified by itask: ARK_NORMAL and
+  ARK_ONE_STEP.  In the ARK_NORMAL mode, the solver steps until
+  it reaches or passes tout and then interpolates to obtain
+  y(tout).  In the ARK_ONE_STEP mode, it takes one internal step
+  and returns.  The behavior of both modes can be over-ridden
+  through user-specification of ark_tstop (through the
+  ARKodeSetStopTime function), in which case if a solver step
+  would pass tstop, the step is shortened so that it stops at
+  exactly the specified stop time, and hence interpolation of
+  y(tout) is not required.
+
+  ycur/yout aliasing note (Addendum C.1): C sets ycur = yout for
+  the whole call; here ycur owns storage and the return paths that
+  rely on the alias copy ycur into yout explicitly.
+  ---------------------------------------------------------------*/
+pub fn ARKodeEvolve(
+    ark_mem: &mut ARKodeMem,
+    tout: f64,
+    yout: &mut NVector,
+    tret: &mut f64,
+    itask: i32,
+) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ERR_FAILURE, ARK_ILL_INPUT, ARK_NORMAL, ARK_NO_MALLOC,
+        ARK_ONE_STEP, ARK_PRESTEPFN_FAIL, ARK_RELAX_MEM_NULL, ARK_RETRY_STEP, ARK_ROOT_RETURN,
+        ARK_RTFUNC_FAIL, ARK_TOO_MUCH_ACC, ARK_TOO_MUCH_WORK, ARK_TSTOP_RETURN, ARK_WARNING,
+        ARK_WF, FIRST_CALL, FOUR, ONE, ONEPSM, RTFOUND, TWO,
+    };
+    use crate::nvector_serial::{N_VScale, N_VWrmsNorm};
+
+    /* C leaves istate uninitialized (every break sets it) */
+    #[allow(unused_assignments)]
+    let mut istate = ARK_SUCCESS;
+
+    /* Check and process inputs */
+
+    /* Check if ark_mem was allocated */
+    if !ark_mem.MallocDone {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_NO_MALLOC,
+            line!(),
+            "ARKodeEvolve",
+            file!(),
+            "Attempt to call before ARKODE initialized.",
+        );
+        return ARK_NO_MALLOC;
+    }
+
+    /* Check for yout != NULL: C sets ark_mem->ycur = yout; here ycur
+    owns matching storage instead (see the aliasing note above) */
+    if ark_mem.ycur.data.len() != ark_mem.yn.data.len() {
+        ark_mem.ycur = NVector::new(ark_mem.yn.data.len());
+    }
+
+    /* Check for valid itask */
+    if (itask != ARK_NORMAL) && (itask != ARK_ONE_STEP) {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeEvolve",
+            file!(),
+            "Illegal value for itask.",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* perform first-step-specific initializations:
+    - initialize tret values to initialization time
+    - perform initial integrator setup  */
+    if ark_mem.initsetup {
+        ark_mem.tretlast = ark_mem.tcur;
+        *tret = ark_mem.tcur;
+        let retval = arkInitialSetup(ark_mem, tout);
+        if retval != ARK_SUCCESS {
+            return retval;
+        }
+    }
+
+    /* perform stopping tests */
+    if !ark_mem.initsetup {
+        let mut retval = ARK_SUCCESS;
+        if arkStopTests(ark_mem, tout, yout, tret, itask, &mut retval) != 0 {
+            return retval;
+        }
+    }
+
+    /* fill current independent variable (and optionally ycur with yn) */
+    ark_mem.tcur = ark_mem.tn;
+    if ark_mem.ensure_ycur {
+        let mut ycur = std::mem::replace(&mut ark_mem.ycur, NVector::new(0));
+        N_VScale(ONE, &ark_mem.yn, &mut ycur);
+        ark_mem.ycur = ycur;
+    }
+
+    /*--------------------------------------------------
+    Looping point for successful internal steps (see the C source
+    for the full description of the loop stages)
+    --------------------------------------------------*/
+    let mut nstloc: i64 = 0;
+    loop {
+        ark_mem.next_h = ark_mem.h;
+
+        /* Reset and check ewt and rwt */
+        if !ark_mem.initsetup {
+            let mut ewt = std::mem::replace(&mut ark_mem.ewt, NVector::new(0));
+            let ewtset_ok = ark_efun_apply_yn(ark_mem, &mut ewt);
+            ark_mem.ewt = ewt;
+            if ewtset_ok != 0 {
+                if ark_mem.itol == ARK_WF {
+                    arkProcessError(
+                        Some(ark_mem),
+                        ARK_ILL_INPUT,
+                        line!(),
+                        "ARKodeEvolve",
+                        file!(),
+                        &format!(
+                            "At t = {}, the user-provide EwtSet function failed.",
+                            fmt_g(ark_mem.tcur, 0, 15)
+                        ),
+                    );
+                } else {
+                    arkProcessError(
+                        Some(ark_mem),
+                        ARK_ILL_INPUT,
+                        line!(),
+                        "ARKodeEvolve",
+                        file!(),
+                        &format!(
+                            "At t = {}, a component of ewt has become <= 0.",
+                            fmt_g(ark_mem.tcur, 0, 15)
+                        ),
+                    );
+                }
+
+                istate = ARK_ILL_INPUT;
+                ark_mem.tretlast = ark_mem.tcur;
+                *tret = ark_mem.tcur;
+                N_VScale(ONE, &ark_mem.yn, yout);
+                break;
+            }
+
+            if !ark_mem.rwt_is_ewt {
+                let mut rwt = std::mem::replace(&mut ark_mem.rwt, NVector::new(0));
+                let ewtset_ok = ark_rfun_apply_yn(ark_mem, &mut rwt);
+                ark_mem.rwt = rwt;
+                if ewtset_ok != 0 {
+                    if ark_mem.itol == ARK_WF {
+                        arkProcessError(
+                            Some(ark_mem),
+                            ARK_ILL_INPUT,
+                            line!(),
+                            "ARKodeEvolve",
+                            file!(),
+                            &format!(
+                                "At t = {}, the user-provide RwtSet function failed.",
+                                fmt_g(ark_mem.tcur, 0, 15)
+                            ),
+                        );
+                    } else {
+                        arkProcessError(
+                            Some(ark_mem),
+                            ARK_ILL_INPUT,
+                            line!(),
+                            "ARKodeEvolve",
+                            file!(),
+                            &format!(
+                                "At t = {}, a component of rwt has become <= 0.",
+                                fmt_g(ark_mem.tcur, 0, 15)
+                            ),
+                        );
+                    }
+
+                    istate = ARK_ILL_INPUT;
+                    ark_mem.tretlast = ark_mem.tcur;
+                    *tret = ark_mem.tcur;
+                    N_VScale(ONE, &ark_mem.yn, yout);
+                    break;
+                }
+            }
+        }
+
+        /* Check for too many steps */
+        if (ark_mem.mxstep > 0) && (nstloc >= ark_mem.mxstep) {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_TOO_MUCH_WORK,
+                line!(),
+                "ARKodeEvolve",
+                file!(),
+                &format!(
+                    "At t = {}, mxstep steps taken before reaching tout.",
+                    fmt_g(ark_mem.tcur, 0, 15)
+                ),
+            );
+            istate = ARK_TOO_MUCH_WORK;
+            ark_mem.tretlast = ark_mem.tcur;
+            *tret = ark_mem.tcur;
+            N_VScale(ONE, &ark_mem.yn, yout);
+            break;
+        }
+
+        /* Check for too much accuracy requested */
+        let nrm = N_VWrmsNorm(&ark_mem.yn, &ark_mem.ewt);
+        ark_mem.tolsf = ark_mem.uround * nrm;
+        if ark_mem.tolsf > ONE && !ark_mem.fixedstep {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_TOO_MUCH_ACC,
+                line!(),
+                "ARKodeEvolve",
+                file!(),
+                &format!(
+                    "At t = {}, too much accuracy requested.",
+                    fmt_g(ark_mem.tcur, 0, 15)
+                ),
+            );
+            istate = ARK_TOO_MUCH_ACC;
+            ark_mem.tretlast = ark_mem.tcur;
+            *tret = ark_mem.tcur;
+            N_VScale(ONE, &ark_mem.yn, yout);
+            ark_mem.tolsf *= TWO;
+            break;
+        } else {
+            ark_mem.tolsf = ONE;
+        }
+
+        /* Check for h below roundoff level in tn */
+        if ark_mem.tcur + ark_mem.h == ark_mem.tcur {
+            ark_mem.nhnil += 1;
+            if ark_mem.nhnil <= ark_mem.mxhnil {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_WARNING,
+                    line!(),
+                    "ARKodeEvolve",
+                    file!(),
+                    &format!(
+                        "Internal t = {} and h = {} are such that t + h = t on the next step. The solver will continue anyway.",
+                        fmt_g(ark_mem.tcur, 0, 15),
+                        fmt_g(ark_mem.h, 0, 15)
+                    ),
+                );
+            }
+            if ark_mem.nhnil == ark_mem.mxhnil {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_WARNING,
+                    line!(),
+                    "ARKodeEvolve",
+                    file!(),
+                    "The above warning has been issued mxhnil times and will not be issued again for this problem.",
+                );
+            }
+        }
+
+        /* Update parameter for upcoming step size */
+        if ark_mem.hprime != ark_mem.h {
+            ark_mem.h *= ark_mem.eta;
+            ark_mem.next_h = ark_mem.h;
+        }
+        if ark_mem.fixedstep {
+            ark_mem.h = ark_mem.hin;
+            ark_mem.next_h = ark_mem.h;
+
+            /* patch for 'fixedstep' + 'tstop' use case:
+            limit fixed step size if step would overtake tstop */
+            if ark_mem.tstopset {
+                if (ark_mem.tcur + ark_mem.h - ark_mem.tstop) * ark_mem.h > ZERO {
+                    ark_mem.h =
+                        (ark_mem.tstop - ark_mem.tcur) * (ONE - FOUR * ark_mem.uround);
+                }
+            }
+        }
+
+        /* Looping point for step attempts */
+        let mut dsm = ZERO;
+        let mut kflag = ARK_SUCCESS;
+        let relax_fails = 0; /* arkRelax bookkeeping (module pending) */
+        let mut nflag = FIRST_CALL;
+        let mut attempts = 0;
+        let _ = relax_fails;
+        let mut ncf = 0;
+        let mut nef = 0;
+        let mut constrfails = 0;
+        ark_mem.last_kflag = 0;
+        loop {
+            /* increment attempt counters
+            Note: kflag can only equal ARK_RETRY_STEP if the stepper rejected
+            the current step size before performing calculations. Thus, we
+            do not include those when keeping track of step "attempts". */
+            if kflag != ARK_RETRY_STEP {
+                attempts += 1;
+                ark_mem.nst_attempts += 1;
+            }
+
+            /* fill tcur with the last accepted step time */
+            ark_mem.tcur = ark_mem.tn;
+
+            /* call the user-supplied pre-step function (if it exists) */
+            if let Some(pre_step_fn) = ark_mem.PreStepFn {
+                let retval = if ark_mem.ensure_ycur {
+                    pre_step_fn(
+                        ark_mem.tcur,
+                        &ark_mem.ycur,
+                        ark_mem.nst,
+                        attempts,
+                        &mut ark_mem.user_data,
+                    )
+                } else {
+                    pre_step_fn(
+                        ark_mem.tcur,
+                        &ark_mem.yn,
+                        ark_mem.nst,
+                        attempts,
+                        &mut ark_mem.user_data,
+                    )
+                };
+                if retval != 0 {
+                    return ARK_PRESTEPFN_FAIL;
+                }
+            }
+
+            /* Call time stepper module to attempt a step:
+            0 => step completed successfully
+            >0 => step encountered recoverable failure; reduce step if possible
+            <0 => step encountered unrecoverable failure */
+            let step = ark_mem.step.unwrap();
+            kflag = step(ark_mem, &mut dsm, &mut nflag);
+            if kflag < 0 {
+                break;
+            }
+
+            /* handle solver convergence failures */
+            kflag = arkCheckConvergence(ark_mem, &mut nflag, &mut ncf);
+
+            if kflag < 0 {
+                break;
+            }
+
+            /* Perform relaxation (arkode_relaxation.c not yet ported;
+            relax_enabled can only be set by ARKodeSetRelaxFn, which is
+            also pending — fail loudly if ever reached) */
+            if ark_mem.relax_enabled && (kflag == ARK_SUCCESS) {
+                kflag = ARK_RELAX_MEM_NULL;
+                break;
+            }
+
+            /* perform constraint-handling (if selected, and if solver check
+            passed) */
+            if ark_mem.constraints.is_some() && (kflag == ARK_SUCCESS) {
+                kflag = arkCheckConstraints(ark_mem, &mut constrfails, &mut nflag);
+
+                if kflag < 0 {
+                    break;
+                }
+            }
+
+            /* when fixed time-stepping is enabled, 'success' == successful
+            stage solves (checked in previous block), so just enforce no step
+            size change */
+            if ark_mem.fixedstep {
+                ark_mem.eta = ONE;
+                break;
+            }
+
+            /* check temporal error (if checks above passed) */
+            if kflag == ARK_SUCCESS {
+                kflag = arkCheckTemporalError(ark_mem, &mut nflag, &mut nef, dsm);
+
+                if kflag < 0 {
+                    break;
+                }
+            }
+
+            /* if ignoring temporal error test result (XBraid) force step to
+            pass */
+            if ark_mem.force_pass {
+                ark_mem.last_kflag = kflag;
+                kflag = ARK_SUCCESS;
+                break;
+            }
+
+            /* break attempt loop on successful step */
+            if kflag == ARK_SUCCESS {
+                break;
+            }
+
+            /* unsuccessful step, if |h| = hmin, return ARK_ERR_FAILURE */
+            if SUNRabs(ark_mem.h) <= ark_mem.hmin * ONEPSM {
+                return ARK_ERR_FAILURE;
+            }
+
+            /* update h, hprime and next_h for next iteration */
+            ark_mem.h *= ark_mem.eta;
+            ark_mem.hprime = ark_mem.h;
+            ark_mem.next_h = ark_mem.h;
+
+            /* reset tcur to last saved internal time before reattempting step
+            (and optionally ycur to yn ) */
+            ark_mem.tcur = ark_mem.tn;
+            if ark_mem.ensure_ycur {
+                let mut ycur = std::mem::replace(&mut ark_mem.ycur, NVector::new(0));
+                N_VScale(ONE, &ark_mem.yn, &mut ycur);
+                ark_mem.ycur = ycur;
+            }
+        } /* end looping for step attempts */
+
+        /* If step attempt loop succeeded, complete step (update current
+        time, solution, error stepsize history arrays; call user-supplied
+        step postprocessing function) */
+        if kflag == ARK_SUCCESS {
+            kflag = arkCompleteStep(ark_mem, dsm);
+        }
+
+        /* If step attempt loop failed, process flag and return to user */
+        if kflag != ARK_SUCCESS {
+            istate = arkHandleFailure(ark_mem, kflag);
+            ark_mem.tretlast = ark_mem.tcur;
+            *tret = ark_mem.tcur;
+            N_VScale(ONE, &ark_mem.yn, yout);
+            break;
+        }
+
+        nstloc += 1;
+
+        /* Check for root in last step taken. */
+        if ark_mem.root_mem.is_some() {
+            if ark_mem.root_mem.as_ref().unwrap().nrtfn > 0 {
+                let retval = crate::arkode_root::arkRootCheck3(ark_mem, tout, itask);
+                if retval == RTFOUND {
+                    /* A new root was found */
+                    ark_mem.root_mem.as_mut().unwrap().irfnd = 1;
+                    istate = ARK_ROOT_RETURN;
+                    let tlo = ark_mem.root_mem.as_ref().unwrap().tlo;
+                    ark_mem.tretlast = tlo;
+                    *tret = tlo;
+                    /* C: yout aliases ycur = y(trout) from arkRootCheck3 */
+                    N_VScale(ONE, &ark_mem.ycur, yout);
+                    break;
+                } else if retval == ARK_RTFUNC_FAIL {
+                    /* g failed */
+                    arkProcessError(
+                        Some(ark_mem),
+                        ARK_RTFUNC_FAIL,
+                        line!(),
+                        "ARKodeEvolve",
+                        file!(),
+                        &format!(
+                            "At t = {}, the rootfinding routine failed in an unrecoverable manner.",
+                            fmt_g(ark_mem.root_mem.as_ref().unwrap().tlo, 0, 15)
+                        ),
+                    );
+                    istate = ARK_RTFUNC_FAIL;
+                    break;
+                }
+
+                /* If we are at the end of the first step and we still have
+                some event functions that are inactive, issue a warning as
+                this may indicate a user error in the implementation of the
+                root function. */
+                if ark_mem.nst == 1 {
+                    let rootmem = ark_mem.root_mem.as_ref().unwrap();
+                    let mut inactive_roots = false;
+                    for ir in 0..rootmem.nrtfn as usize {
+                        if !rootmem.gactive[ir] {
+                            inactive_roots = true;
+                            break;
+                        }
+                    }
+                    let mxgnull = rootmem.mxgnull;
+                    if (mxgnull > 0) && inactive_roots {
+                        arkProcessError(
+                            Some(ark_mem),
+                            ARK_WARNING,
+                            line!(),
+                            "ARKodeEvolve",
+                            file!(),
+                            "At the end of the first step, there are still some root functions identically 0. This warning will not be issued again.",
+                        );
+                    }
+                }
+            }
+        }
+
+        /* Check if tn is at tstop or near tstop */
+        if ark_mem.tstopset {
+            let troundoff =
+                FUZZ_FACTOR * ark_mem.uround * (SUNRabs(ark_mem.tcur) + SUNRabs(ark_mem.h));
+
+            if SUNRabs(ark_mem.tcur - ark_mem.tstop) <= troundoff {
+                /* Ensure tout >= tstop, otherwise check for tout return
+                below */
+                if (tout - ark_mem.tstop) * ark_mem.h >= ZERO
+                    || SUNRabs(tout - ark_mem.tstop) <= troundoff
+                {
+                    if ark_mem.tstopinterp && ark_mem.interp.is_some() {
+                        let retval = ARKodeGetDky(ark_mem, ark_mem.tstop, 0, yout);
+                        if retval != ARK_SUCCESS {
+                            arkProcessError(
+                                Some(ark_mem),
+                                retval,
+                                line!(),
+                                "ARKodeEvolve",
+                                file!(),
+                                &format!(
+                                    "At t = {}, interpolating the solution failed.",
+                                    fmt_g(ark_mem.tstop, 0, 15)
+                                ),
+                            );
+                            istate = retval;
+                            break;
+                        }
+                    } else {
+                        N_VScale(ONE, &ark_mem.yn, yout);
+                    }
+                    ark_mem.tretlast = ark_mem.tstop;
+                    *tret = ark_mem.tstop;
+                    ark_mem.tstopset = false;
+                    istate = ARK_TSTOP_RETURN;
+                    break;
+                }
+            }
+            /* limit upcoming step if it will overcome tstop */
+            else if (ark_mem.tcur + ark_mem.hprime - ark_mem.tstop) * ark_mem.h > ZERO {
+                ark_mem.hprime =
+                    (ark_mem.tstop - ark_mem.tcur) * (ONE - FOUR * ark_mem.uround);
+                ark_mem.eta = ark_mem.hprime / ark_mem.h;
+            }
+        }
+
+        /* In NORMAL mode, check if tout reached */
+        if (itask == ARK_NORMAL) && (ark_mem.tcur - tout) * ark_mem.h >= ZERO {
+            if ark_mem.interp.is_some() {
+                let retval = ARKodeGetDky(ark_mem, tout, 0, yout);
+                if retval != ARK_SUCCESS {
+                    arkProcessError(
+                        Some(ark_mem),
+                        retval,
+                        line!(),
+                        "ARKodeEvolve",
+                        file!(),
+                        &format!(
+                            "At t = {}, interpolating the solution failed.",
+                            fmt_g(tout, 0, 15)
+                        ),
+                    );
+                    istate = retval;
+                    break;
+                }
+                ark_mem.tretlast = tout;
+                *tret = tout;
+            } else {
+                N_VScale(ONE, &ark_mem.yn, yout);
+                ark_mem.tretlast = ark_mem.tcur;
+                *tret = ark_mem.tcur;
+            }
+            ark_mem.next_h = ark_mem.hprime;
+            istate = ARK_SUCCESS;
+            break;
+        }
+
+        /* In ONE_STEP mode, exit loop (arkCompleteStep already copied ycur
+        to yn; C relies on ycur being an alias of yout) */
+        if itask == ARK_ONE_STEP {
+            istate = ARK_SUCCESS;
+            ark_mem.tretlast = ark_mem.tcur;
+            *tret = ark_mem.tcur;
+            ark_mem.next_h = ark_mem.hprime;
+            N_VScale(ONE, &ark_mem.ycur, yout);
+            break;
+        }
+    } /* end looping for internal steps */
+
+    istate
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,5 +2641,120 @@ mod tests {
         ark_mem.fn_is_current = true;
         assert_eq!(arkHin(&mut ark_mem, -1.0), ARK_SUCCESS);
         assert!(ark_mem.h < 0.0);
+    }
+
+    /* ------------- ARKodeEvolve end-to-end machinery tests -------------
+    A manufactured stepper that advances y = t^2 exactly: each step fills
+    ycur with the exact solution at tn + h and reports dsm = 0.5 (always
+    passes the error test). This exercises InitialSetup, the internal
+    step loop, ewt refresh, CompleteStep, the Hermite interpolation
+    chain, GetDky output interpolation, tstop and root returns. */
+
+    fn t2_rhs(_a: &mut ARKodeMem, t: f64, _y: &NVector, f: &mut NVector, _m: i32) -> i32 {
+        f.data[0] = 2.0 * t;
+        0
+    }
+
+    fn t2_step(a: &mut ARKodeMem, dsm: &mut f64, nflag: &mut i32) -> i32 {
+        let t1 = a.tcur + a.h;
+        a.ycur.data[0] = t1 * t1;
+        *dsm = 0.5;
+        *nflag = ARK_SUCCESS;
+        ARK_SUCCESS
+    }
+
+    fn t2_mem() -> Box<ARKodeMem> {
+        let ctx = SUNContext_Create();
+        let mut ark_mem = arkCreate(&ctx);
+        ark_mem.step_init = Some(stub_init);
+        ark_mem.step = Some(t2_step);
+        ark_mem.step_fullrhs = Some(t2_rhs);
+        ark_mem.step_mem = Some(Box::new(0i32));
+        let mut y0 = NVector::new(1);
+        y0.data[0] = 1.0; /* y(1) = 1 */
+        assert_eq!(arkInit(&mut ark_mem, 1.0, &y0, FIRST_INIT), ARK_SUCCESS);
+        ark_mem.hin = 0.1; /* user-supplied initial step */
+        ark_mem
+    }
+
+    #[test]
+    fn evolve_normal_mode_interpolates_tout() {
+        use crate::arkode_impl::ARK_NORMAL;
+        let mut ark_mem = t2_mem();
+        let mut yout = NVector::new(1);
+        let mut tret = 0.0;
+        let istate = ARKodeEvolve(&mut ark_mem, 2.0, &mut yout, &mut tret, ARK_NORMAL);
+        assert_eq!(istate, ARK_SUCCESS);
+        assert_eq!(tret, 2.0);
+        assert!((yout.data[0] - 4.0).abs() < 1e-9, "yout = {}", yout.data[0]);
+        assert!(ark_mem.nst >= 10, "nst = {}", ark_mem.nst);
+        /* continuation call also works (stop tests path) */
+        let istate = ARKodeEvolve(&mut ark_mem, 3.0, &mut yout, &mut tret, ARK_NORMAL);
+        assert_eq!(istate, ARK_SUCCESS);
+        assert_eq!(tret, 3.0);
+        assert!((yout.data[0] - 9.0).abs() < 1e-8, "yout = {}", yout.data[0]);
+    }
+
+    #[test]
+    fn evolve_one_step_and_fixedstep_modes() {
+        use crate::arkode_impl::ARK_ONE_STEP;
+        let mut ark_mem = t2_mem();
+        ark_mem.fixedstep = true;
+        ark_mem.hin = 0.25;
+        let mut yout = NVector::new(1);
+        let mut tret = 0.0;
+        let istate = ARKodeEvolve(&mut ark_mem, 2.0, &mut yout, &mut tret, ARK_ONE_STEP);
+        assert_eq!(istate, ARK_SUCCESS);
+        assert!((tret - 1.25).abs() < 1e-12, "tret = {}", tret);
+        assert!((yout.data[0] - 1.25 * 1.25).abs() < 1e-12);
+        assert_eq!(ark_mem.nst, 1);
+        /* second single step */
+        let istate = ARKodeEvolve(&mut ark_mem, 2.0, &mut yout, &mut tret, ARK_ONE_STEP);
+        assert_eq!(istate, ARK_SUCCESS);
+        assert!((tret - 1.5).abs() < 1e-12, "tret = {}", tret);
+        assert_eq!(ark_mem.nst, 2);
+    }
+
+    #[test]
+    fn evolve_tstop_return() {
+        use crate::arkode_impl::{ARK_NORMAL, ARK_TSTOP_RETURN};
+        let mut ark_mem = t2_mem();
+        ark_mem.tstopset = true;
+        ark_mem.tstop = 1.5;
+        let mut yout = NVector::new(1);
+        let mut tret = 0.0;
+        let istate = ARKodeEvolve(&mut ark_mem, 2.0, &mut yout, &mut tret, ARK_NORMAL);
+        assert_eq!(istate, ARK_TSTOP_RETURN);
+        assert_eq!(tret, 1.5);
+        /* tstop return copies yn = y(tstop) (steps were limited to end
+        exactly at tstop) */
+        assert!((yout.data[0] - 2.25).abs() < 1e-9, "yout = {}", yout.data[0]);
+    }
+
+    #[test]
+    fn evolve_root_return() {
+        use crate::arkode_impl::{ARK_NORMAL, ARK_ROOT_RETURN};
+        use crate::arkode_root::ARKodeRootInit;
+
+        fn g_at_1p5(_t: f64, y: &NVector, gout: &mut [f64], _ud: &mut UserData) -> i32 {
+            gout[0] = y.data[0] - 2.25; /* zero at t = 1.5 on y = t^2 */
+            0
+        }
+
+        let mut ark_mem = t2_mem();
+        assert_eq!(ARKodeRootInit(&mut ark_mem, 1, Some(g_at_1p5)), ARK_SUCCESS);
+        let mut yout = NVector::new(1);
+        let mut tret = 0.0;
+        let istate = ARKodeEvolve(&mut ark_mem, 2.0, &mut yout, &mut tret, ARK_NORMAL);
+        assert_eq!(istate, ARK_ROOT_RETURN);
+        assert!((tret - 1.5).abs() < 1e-6, "tret = {}", tret);
+        assert!((yout.data[0] - 2.25).abs() < 1e-6, "yout = {}", yout.data[0]);
+        assert_eq!(ark_mem.root_mem.as_ref().unwrap().iroots[0], 1);
+
+        /* continuing past the root reaches tout */
+        let istate = ARKodeEvolve(&mut ark_mem, 2.0, &mut yout, &mut tret, ARK_NORMAL);
+        assert_eq!(istate, ARK_SUCCESS);
+        assert_eq!(tret, 2.0);
+        assert!((yout.data[0] - 4.0).abs() < 1e-8, "yout = {}", yout.data[0]);
     }
 }
