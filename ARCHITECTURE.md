@@ -263,11 +263,12 @@ in place — the perturbation reaches the user RHS/residual because `p` aliases
 the user's own parameter array. The Rust ports keep `cv_p`/`ida_p` as owned
 copies, so user code that relies on the INTERNAL DQ sensitivities (fS/resS =
 None) must wrap its data as `FSAUserData { p, user }`; the DQ routines mirror
-each `p[which]` perturbation into `.p` through the user-data downcast (helper
-`ida_dq_set_p`; cvodes must adopt the same helper before its FSA examples —
-its DQ currently perturbs only the dead copy). `IDASolve` guards this: internal
-DQ + non-FSAUserData user data is rejected with IDA_ILL_INPUT instead of
-silently producing zero sensitivities. Analytic-resS users are unaffected.
+each `p[which]` perturbation into `.p` through the user-data downcast (helpers
+`ida_dq_set_p` / `cv_dq_set_p`). Both solvers guard this: internal DQ +
+non-FSAUserData user data is rejected with ILL_INPUT instead of silently
+producing zero sensitivities (`IDASolve` for idas; `cvInitialSetup` for
+cvodes, next to the C MSGCV_NULL_P checks, covering both the sensitivity and
+quadrature-sensitivity DQ paths). Analytic-fS/resS users are unaffected.
 
 All public API functions keep their exact C names (`CVodeCreate`, `CVodeInit`,
 `CVodeSStolerances`, `CVodeSetLinearSolver`, `CVode`, `CVodeGetDky`, …) with

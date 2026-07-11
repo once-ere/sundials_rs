@@ -3713,6 +3713,25 @@ fn cvInitialSetup(cv_mem: &mut CVodeMem, tout: f64) -> i32 {
             return CV_ILL_INPUT;
         }
 
+        /* (Rust-port guard, no C counterpart: the internal DQ perturbs
+           p[which] through the user's own array in C.  Here that is
+           only possible via the FSAUserData convention — without it
+           the user RHS would silently see frozen parameters and every
+           sensitivity would come out zero.) */
+        if cv_mem.cv_fSDQ {
+            let is_fsa = cv_mem
+                .cv_user_data
+                .as_ref()
+                .map(|d| d.is::<FSAUserData>())
+                .unwrap_or(false);
+            if !is_fsa {
+                cvProcessError(Some(cv_mem), CV_ILL_INPUT, line!(), "cvInitialSetup", file!(),
+                               "Internal DQ sensitivities require the FSAUserData user-data \
+                                convention (see sundials_types.rs).");
+                return CV_ILL_INPUT;
+            }
+        }
+
         /* Load ewtS */
         let ier = cvSensEwtSet_apply_to_ewtS(cv_mem);
         if ier != 0 {
@@ -3737,6 +3756,21 @@ fn cvInitialSetup(cv_mem: &mut CVodeMem, tout: f64) -> i32 {
             /* Test if we have the problem parameters */
             if cv_mem.cv_p.is_empty() {
                 cvProcessError(Some(cv_mem), CV_ILL_INPUT, line!(), "cvInitialSetup", file!(), MSGCV_NULL_P);
+                return CV_ILL_INPUT;
+            }
+
+            /* (Rust-port guard, no C counterpart — see the sensitivity
+               FSAUserData guard above; the quad-sens DQ perturbs
+               p[which] the same way.) */
+            let is_fsa = cv_mem
+                .cv_user_data
+                .as_ref()
+                .map(|d| d.is::<FSAUserData>())
+                .unwrap_or(false);
+            if !is_fsa {
+                cvProcessError(Some(cv_mem), CV_ILL_INPUT, line!(), "cvInitialSetup", file!(),
+                               "Internal DQ quadrature sensitivities require the FSAUserData \
+                                user-data convention (see sundials_types.rs).");
                 return CV_ILL_INPUT;
             }
         }
@@ -8162,6 +8196,20 @@ pub(crate) fn cvSensRhsInternalDQ(
     0
 }
 
+/* C's sens-DQ routines perturb the parameter THROUGH the user's own p
+   array (CVodeSetSensParams stores the pointer, so the user RHS sees
+   the perturbed value).  cv_p is an owned copy here; the perturbation
+   is mirrored into the user data through the FSAUserData convention
+   (sundials_types.rs) and restored the same way. */
+fn cv_dq_set_p(cv_mem: &mut CVodeMem, which: usize, value: f64) {
+    cv_mem.cv_p[which] = value;
+    if let Some(d) = cv_mem.cv_user_data.as_mut() {
+        if let Some(f) = d.downcast_mut::<FSAUserData>() {
+            f.p[which] = value;
+        }
+    }
+}
+
 /*
  * cvSensRhs1InternalDQ   - internal CVSensRhs1Fn
  *
@@ -8224,7 +8272,7 @@ fn cvSensRhs1InternalDQ(
             let r2Delta = HALF / Delta;
 
             N_VLinearSum(ONE, y, Delta, yS, ytemp);
-            cv_mem.cv_p[which] = psave + Delta;
+            cv_dq_set_p(cv_mem, which, psave + Delta);
 
             let retval = f(t, ytemp, ySdot, &mut cv_mem.cv_user_data);
             nfel += 1;
@@ -8233,7 +8281,7 @@ fn cvSensRhs1InternalDQ(
             }
 
             N_VLinearSum(ONE, y, -Delta, yS, ytemp);
-            cv_mem.cv_p[which] = psave - Delta;
+            cv_dq_set_p(cv_mem, which, psave - Delta);
 
             let retval = f(t, ytemp, ftemp, &mut cv_mem.cv_user_data);
             nfel += 1;
@@ -8268,14 +8316,14 @@ fn cvSensRhs1InternalDQ(
             /* ySdot = r2Deltay*ySdot - r2Deltay*ftemp (aliased) */
             ySdot.linear_sum_with(r2Deltay, -r2Deltay, ftemp);
 
-            cv_mem.cv_p[which] = psave + Deltap;
+            cv_dq_set_p(cv_mem, which, psave + Deltap);
             let retval = f(t, y, ytemp, &mut cv_mem.cv_user_data);
             nfel += 1;
             if retval != 0 {
                 return retval;
             }
 
-            cv_mem.cv_p[which] = psave - Deltap;
+            cv_dq_set_p(cv_mem, which, psave - Deltap);
             let retval = f(t, y, ftemp, &mut cv_mem.cv_user_data);
             nfel += 1;
             if retval != 0 {
@@ -8298,7 +8346,7 @@ fn cvSensRhs1InternalDQ(
             let rDelta = ONE / Delta;
 
             N_VLinearSum(ONE, y, Delta, yS, ytemp);
-            cv_mem.cv_p[which] = psave + Delta;
+            cv_dq_set_p(cv_mem, which, psave + Delta);
 
             let retval = f(t, ytemp, ySdot, &mut cv_mem.cv_user_data);
             nfel += 1;
@@ -8322,7 +8370,7 @@ fn cvSensRhs1InternalDQ(
             /* ySdot = rDeltay*ySdot - rDeltay*ydot (aliased) */
             ySdot.linear_sum_with(rDeltay, -rDeltay, ydot);
 
-            cv_mem.cv_p[which] = psave + Deltap;
+            cv_dq_set_p(cv_mem, which, psave + Deltap);
             let retval = f(t, y, ytemp, &mut cv_mem.cv_user_data);
             nfel += 1;
             if retval != 0 {
@@ -8343,7 +8391,7 @@ fn cvSensRhs1InternalDQ(
         _ => {}
     }
 
-    cv_mem.cv_p[which] = psave;
+    cv_dq_set_p(cv_mem, which, psave);
 
     /* Increment counter nfeS */
     cv_mem.cv_nfeS += nfel;
@@ -8418,7 +8466,7 @@ fn cvQuadSensRhs1InternalDQ(
             let r2Delta = HALF / Delta;
 
             N_VLinearSum(ONE, y, Delta, yS, tmp);
-            cv_mem.cv_p[which] = psave + Delta;
+            cv_dq_set_p(cv_mem, which, psave + Delta);
 
             let retval = fQ(t, tmp, yQSdot, &mut cv_mem.cv_user_data);
             nfel += 1;
@@ -8427,7 +8475,7 @@ fn cvQuadSensRhs1InternalDQ(
             }
 
             N_VLinearSum(ONE, y, -Delta, yS, tmp);
-            cv_mem.cv_p[which] = psave - Delta;
+            cv_dq_set_p(cv_mem, which, psave - Delta);
 
             let retval = fQ(t, tmp, tmpQ, &mut cv_mem.cv_user_data);
             nfel += 1;
@@ -8444,7 +8492,7 @@ fn cvQuadSensRhs1InternalDQ(
             let rDelta = ONE / Delta;
 
             N_VLinearSum(ONE, y, Delta, yS, tmp);
-            cv_mem.cv_p[which] = psave + Delta;
+            cv_dq_set_p(cv_mem, which, psave + Delta);
 
             let retval = fQ(t, tmp, yQSdot, &mut cv_mem.cv_user_data);
             nfel += 1;
@@ -8459,7 +8507,7 @@ fn cvQuadSensRhs1InternalDQ(
         _ => {}
     }
 
-    cv_mem.cv_p[which] = psave;
+    cv_dq_set_p(cv_mem, which, psave);
 
     /* Increment counter nfQeS */
     cv_mem.cv_nfQeS += nfel;
