@@ -800,18 +800,18 @@ idasRoberts_klu, idasRoberts_sps, idasRoberts_ASAi_klu, idasRoberts_ASAi_sps,
 idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 
 ## crates/arkode_rs — Phase 6
-- [ ] arkode_types_impl.h — todo
-- [ ] arkode_impl.h — todo
+- [x] arkode_types_impl.h — committed (forward decls subsumed by arkode_impl.rs)
+- [x] arkode_impl.h — committed (arkode_impl.rs: arkode.h constants/fn types + ARKodeMem with Option<fn> step_* table, step_mem = Box<dyn Any>, ARKInterp enum, `fn` field renamed fn_)
 - [ ] arkode_butcher.c — todo
 - [ ] arkode_butcher_erk.c (+ .def) — todo
 - [ ] arkode_butcher_dirk.c (+ .def) — todo
-- [ ] arkode_interp_impl.h — todo
+- [x] arkode_interp_impl.h — committed (Hermite/Lagrange content structs; generic ARKInterp enum lives in arkode_impl.rs)
 - [ ] arkode_interp.c — todo
 - [ ] arkode.c — todo
 - [ ] arkode_io.c — todo
-- [ ] arkode_adapt_impl.h — todo
+- [x] arkode_adapt_impl.h — committed (ARKodeHAdaptMem struct + adaptivity constants)
 - [ ] arkode_adapt.c — todo
-- [ ] arkode_root_impl.h — todo
+- [x] arkode_root_impl.h — committed (ARKodeRootMem struct, C int*/realtype* arrays -> Vec)
 - [ ] arkode_root.c — todo
 - [ ] arkode_erkstep_impl.h — todo
 - [ ] arkode_erkstep.c — todo
@@ -844,7 +844,7 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [ ] arkode_bandpre.c — todo
 - [ ] arkode_bbdpre_impl.h — todo
 - [ ] arkode_bbdpre.c — todo
-- [ ] arkode_relaxation_impl.h — todo
+- [x] arkode_relaxation_impl.h — committed (ARKodeRelaxMem struct + delta-E/get-order fn types)
 - [ ] arkode_relaxation.c — todo
 - [ ] arkode_user_controller.c/.h — todo
 - [ ] arkode_sunstepper.c — todo

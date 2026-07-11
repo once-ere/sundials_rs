@@ -40,12 +40,32 @@ pub use sundials_core::sunlinsol_pcg;
 pub use sundials_core::sundials_nonlinearsolver;
 pub use sundials_core::sunnonlinsol_newton;
 pub use sundials_core::sunnonlinsol_fixedpoint;
+pub use sundials_core::sundials_adaptcontroller;
+pub use sundials_core::sunadaptcontroller_soderlind;
+pub use sundials_core::sunadaptcontroller_imexgus;
+pub use sundials_core::sunadaptcontroller_mrihtol;
+pub use sundials_core::sundials_domeigestimator;
+pub use sundials_core::sundomeigest_power;
+pub use sundials_core::sundomeigest_arnoldi;
+pub use sundials_core::sundials_stepper;
+pub use sundials_core::sundials_datanode;
+pub use sundials_core::sundatanode_inmem;
+pub use sundials_core::sundials_adjointcheckpointscheme;
+pub use sundials_core::sunadjointcheckpointscheme_fixed;
+pub use sundials_core::sundials_adjointstepper;
+pub use sundials_core::sundials_memory;
+pub use sundials_core::sundials_system_memory;
+pub use sundials_core::sundials_cli;
 
 // ARKODE proper (modules land phase by phase; see ../../PROGRESS.md)
 pub mod arkode_impl;
+pub mod arkode_adapt_impl;
+pub mod arkode_root_impl;
+pub mod arkode_relaxation_impl;
+pub mod arkode_interp_impl;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
-// (arkode_impl::* joins the prelude once the module has content.)
+pub use crate::arkode_impl::*;
 pub use crate::nvector_serial::*;
 pub use crate::sundials_context::*;
 pub use crate::sundials_errors::*;
