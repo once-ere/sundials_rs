@@ -37,7 +37,7 @@ sunnonlinsol_{newton,fixedpoint}.c
 - [x] sundomeigest/arnoldi/sundomeigest_arnoldi.c — committed (dgeev → EISPACK HQR, documented)
 - [x] sundials/sundials_nvector_senswrapper.c — committed
 - [x] sundials/sundials_stepper.c — committed (Phase 6 start; ops stay an Option<fn> table since integrators register them one at a time via Set*Fn; content = UserData; C's uninitialized reinit/resetcheckpointindex/getnumsteps ops noted)
-- [ ] sundials/sundials_adjointstepper.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
+- [x] sundials/sundials_adjointstepper.c — committed (owning Option slots for fwd/adj SUNSteppers + checkpoint scheme; own_* flags honored in Destroy; ReInit discards ReInit retvals as C does)
 - [x] sundials/sundials_adjointcheckpointscheme.c — committed (Option<fn> registration table like SUNStepper; content = UserData)
 - [x] sunadjointcheckpointscheme/fixed/sunadjointcheckpointscheme_fixed.c — committed (cached node aliases re-derived by key lookup from step_num fields; C UAF corner on re-loading a consumed step returns CHECKPOINT_NOT_FOUND instead)
 - [x] sundials/sundials_datanode.c — committed (enum dispatch; tree owns children, Get* lend &mut borrows, Remove* move the child out; Destroy = drop)

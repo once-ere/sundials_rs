@@ -83,3 +83,4 @@ pub mod sundials_datanode;
 pub mod sundatanode_inmem;
 pub mod sundials_adjointcheckpointscheme;
 pub mod sunadjointcheckpointscheme_fixed;
+pub mod sundials_adjointstepper;
