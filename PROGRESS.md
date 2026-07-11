@@ -802,7 +802,7 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 ## crates/arkode_rs — Phase 6
 - [x] arkode_types_impl.h — committed (forward decls subsumed by arkode_impl.rs)
 - [x] arkode_impl.h — committed (arkode_impl.rs: arkode.h constants/fn types + ARKodeMem with Option<fn> step_* table, step_mem = Box<dyn Any>, ARKInterp enum, `fn` field renamed fn_)
-- [ ] arkode_butcher.c — PART I committed (table object: Alloc/Create/Copy/Space/Free/Write/IsStifflyAccurate; A -> Vec<Vec<f64>>, d Option). PART II todo: CheckOrder/CheckARKOrder + ~40 static order-condition helpers (arkode_butcher.c:440-end)
+- [x] arkode_butcher.c — committed (PART I table object; PART II CheckOrder/CheckARKOrder + mv/vv/vp/dot, rowsum/order1..order6s, __ButcherSimplifyingAssumptions; C's duplicated method/embedding blocks factored into byte-identical-output helpers; CheckARKOrder d[1]=B1->d quirk preserved)
 - [ ] arkode_butcher_erk.c (+ .def) — todo
 - [ ] arkode_butcher_dirk.c (+ .def) — todo
 - [x] arkode_interp_impl.h — committed (Hermite/Lagrange content structs; generic ARKInterp enum lives in arkode_impl.rs)

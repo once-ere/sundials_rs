@@ -18,6 +18,9 @@
    mirroring C loops. Same rationale as the sundials_core allows. */
 #![allow(clippy::write_with_newline)]
 #![allow(clippy::manual_memcpy)]
+/* C `(x > TOL) ? FALSE : TRUE` becomes !(x > TOL) so NaN keeps the C
+   comparison semantics (same allow as sundials_core). */
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
 #![forbid(unsafe_code)]
 
 // Shared SUNDIALS core (re-exported so donor `crate::<mod>` paths resolve)
