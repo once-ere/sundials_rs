@@ -25,6 +25,8 @@
 #![allow(clippy::needless_return)]
 /* Butcher-table coefficients keep the C source's full decimal text */
 #![allow(clippy::excessive_precision)]
+/* C-shaped `x < lo || x > hi` bounds checks kept verbatim */
+#![allow(clippy::manual_range_contains)]
 #![forbid(unsafe_code)]
 
 // Shared SUNDIALS core (re-exported so donor `crate::<mod>` paths resolve)
@@ -78,6 +80,8 @@ pub mod arkode_interp_impl;
 pub mod arkode_butcher;
 pub mod arkode_butcher_erk;
 pub mod arkode_butcher_dirk;
+pub mod arkode;
+pub mod arkode_interp;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
 pub use crate::arkode_impl::*;

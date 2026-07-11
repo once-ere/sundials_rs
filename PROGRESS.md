@@ -806,8 +806,8 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_butcher_erk.c (+ .def) — committed (X-macro -> match; all 27 tables transcribed; validated against ark_test_butcher.out expectations)
 - [x] arkode_butcher_dirk.c (+ .def) — committed (27 tables; DIRK+ERK ARK-pair CheckARKOrder validated against ark_test_butcher.out)
 - [x] arkode_interp_impl.h — committed (Hermite/Lagrange content structs; generic ARKInterp enum lives in arkode_impl.rs)
-- [ ] arkode_interp.c — todo
-- [ ] arkode.c — todo
+- [x] arkode_interp.c — committed (dispatchers take ark_mem only, take/put-back on ark_mem.interp; Hermite quartic/quintic bootstrap recurses on the impl; LBasis family spans full nhist as in C; polynomial-exactness tests)
+- [ ] arkode.c — PART I committed (arkAllocVec/arkFreeVec/arkResizeVec; empty-NVector-as-NULL convention pinned). Remaining: arkCreate/ARKodeEvolve/InitialSetup/arkHin/CompleteStep/etc
 - [ ] arkode_io.c — todo
 - [x] arkode_adapt_impl.h — committed (ARKodeHAdaptMem struct + adaptivity constants)
 - [ ] arkode_adapt.c — todo

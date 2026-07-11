@@ -366,6 +366,32 @@ pub fn N_VSpace(v: &NVector) -> (i64, i64) {
     (v.len() as i64, 1)
 }
 
+/// N_VLinearCombination_Serial for a destination DISTINCT from every
+/// operand (the C kernel's general branch; the z==X[0] in-place
+/// branches are separate in-place calls under workspace rule 5).
+/// Per element the accumulation order is c[0]*x0, += c[1]*x1, ... —
+/// bit-identical to the C special cases for nvec = 1 and 2 as well.
+pub fn N_VLinearCombination(
+    nvec: i32,
+    c: &[f64],
+    x: &[&NVector],
+    z: &mut NVector,
+) -> i32 {
+    /* invalid number of vectors */
+    if nvec < 1 {
+        return -1;
+    }
+    let nvec = nvec as usize;
+    for k in 0..z.data.len() {
+        let mut acc = c[0] * x[0].data[k];
+        for i in 1..nvec {
+            acc += c[i] * x[i].data[k];
+        }
+        z.data[k] = acc;
+    }
+    0
+}
+
 /// N_VBufSize_Serial: buffer size in bytes (length * sizeof(sunrealtype)).
 pub fn N_VBufSize(x: &NVector, size: &mut i64) -> crate::sundials_errors::SUNErrCode {
     *size = (x.data.len() as i64) * (std::mem::size_of::<f64>() as i64);
