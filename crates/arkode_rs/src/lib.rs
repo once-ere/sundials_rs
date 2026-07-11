@@ -27,6 +27,8 @@
 #![allow(clippy::excessive_precision)]
 /* C-shaped `x < lo || x > hi` bounds checks kept verbatim */
 #![allow(clippy::manual_range_contains)]
+/* C's nested if structure is kept as written */
+#![allow(clippy::collapsible_if)]
 #![forbid(unsafe_code)]
 
 // Shared SUNDIALS core (re-exported so donor `crate::<mod>` paths resolve)
@@ -82,6 +84,7 @@ pub mod arkode_butcher_erk;
 pub mod arkode_butcher_dirk;
 pub mod arkode;
 pub mod arkode_interp;
+pub mod arkode_adapt;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
 pub use crate::arkode_impl::*;

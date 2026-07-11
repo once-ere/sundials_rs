@@ -810,7 +810,7 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [ ] arkode.c — PART I committed (arkAllocVec/arkFreeVec/arkResizeVec; empty-NVector-as-NULL convention pinned). Remaining: arkCreate/ARKodeEvolve/InitialSetup/arkHin/CompleteStep/etc
 - [ ] arkode_io.c — todo
 - [x] arkode_adapt_impl.h — committed (ARKodeHAdaptMem struct + adaptivity constants)
-- [ ] arkode_adapt.c — todo
+- [x] arkode_adapt.c — committed (arkAdapt signature drops the always-ark_mem-derived hadapt_mem/ycur args per Addendum C.1; SUNRcopysign added to sundials_math)
 - [x] arkode_root_impl.h — committed (ARKodeRootMem struct, C int*/realtype* arrays -> Vec)
 - [ ] arkode_root.c — todo
 - [ ] arkode_erkstep_impl.h — todo

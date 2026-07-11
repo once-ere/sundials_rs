@@ -25,6 +25,10 @@ pub fn SUNRsqrt(x: f64) -> f64 {
     if x <= 0.0 { 0.0 } else { x.sqrt() }
 }
 #[inline]
+pub fn SUNRcopysign(x: f64, y: f64) -> f64 {
+    x.copysign(y)
+}
+#[inline]
 pub fn SUNRexp(x: f64) -> f64 {
     x.exp()
 }
