@@ -1,0 +1,5 @@
+# Overrides for argument decoding of variant reference files
+# (see verify_examples.sh): <reference basename> <argv...>
+# Needed when the underscore-joined filename is ambiguous because an
+# argument itself contains underscores.
+idasAnalytic_mels_idas.init_step_1e-5 idas.init_step 1e-5

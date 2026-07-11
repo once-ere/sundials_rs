@@ -46,30 +46,72 @@ verify_crate() {
     echo "$crate: EXAMPLE BUILD FAILED (see logs/build_$crate.log)" >> logs/summary.txt
     return
   fi
+  # Run one (example, args) pair and append its summary line.
+  # $1 = crate, $2 = example name, $3 = reference file, $4 = output tag
+  # (name or name_argsuffix), $5.. = decoded command-line args.
+  verify_one() {
+    local crate="$1" name="$2" ref="$3" tag="$4"; shift 4
+    local bin="target/release/examples/$name"
+    "$bin" "$@" > "logs/$tag.out" 2>&1
+    local code=$?
+    if [ $code -ne 0 ]; then
+      echo "$crate/$tag  FAIL($code)" >> logs/summary.txt; return
+    fi
+    if diff <(flt "logs/$tag.out") <(flt "$ref") > "logs/$tag.diff" 2>&1; then
+      echo "$crate/$tag  IDENTICAL" >> logs/summary.txt
+      rm -f "logs/$tag.diff"
+    else
+      local lref="$LOCALREF/${refdir#$REFROOT/}/$(basename "$ref")"
+      if [ -f "$lref" ] && diff <(flt "logs/$tag.out") <(flt "$lref") > /dev/null 2>&1; then
+        echo "$crate/$tag  LOCAL-C (shipped-ref diff: $(wc -l < "logs/$tag.diff" | tr -d ' ') lines)" >> logs/summary.txt
+      else
+        echo "$crate/$tag  DIFF($(wc -l < "logs/$tag.diff" | tr -d ' ') lines)" >> logs/summary.txt
+      fi
+    fi
+  }
+
   for name in $names; do
     local bin="target/release/examples/$name"
     if [ ! -x "$bin" ]; then
       echo "$crate/$name  FAIL(no binary)" >> logs/summary.txt; continue
     fi
-    "$bin" > "logs/$name.out" 2>&1
-    local code=$?
-    if [ $code -ne 0 ]; then
-      echo "$crate/$name  FAIL($code)" >> logs/summary.txt; continue
-    fi
+
+    # Plain (no-argument) reference, when one is shipped.
     local ref="$refdir/$name.out"
-    if [ ! -f "$ref" ]; then
-      echo "$crate/$name  NOREF" >> logs/summary.txt; continue
+    local have_any=0
+    if [ -f "$ref" ]; then
+      have_any=1
+      verify_one "$crate" "$name" "$ref" "$name"
     fi
-    if diff <(flt "logs/$name.out") <(flt "$ref") > "logs/$name.diff" 2>&1; then
-      echo "$crate/$name  IDENTICAL" >> logs/summary.txt
-      rm -f "logs/$name.diff"
-    else
-      local lref="$LOCALREF/${refdir#$REFROOT/}/$name.out"
-      if [ -f "$lref" ] && diff <(flt "logs/$name.out") <(flt "$lref") > /dev/null 2>&1; then
-        echo "$crate/$name  LOCAL-C (shipped-ref diff: $(wc -l < "logs/$name.diff" | tr -d ' ') lines)" >> logs/summary.txt
-      else
-        echo "$crate/$name  DIFF($(wc -l < "logs/$name.diff" | tr -d ' ') lines)" >> logs/summary.txt
-      fi
+
+    # Argument-encoded reference variants: <name>_<argv-with-underscores>.out
+    # (e.g. idasRoberts_FSA_dns_-sensi_stg_t.out -> args "-sensi stg t").
+    # The underscore join is lossy for keys that contain underscores
+    # (idas.init_step, kinsol m_aa, ...): tools/verify_args.map overrides
+    # the decoding per reference basename.  Variant scanning is enabled
+    # for idas_rs/arkode_rs only; the older crates' variants were
+    # verified manually (see VERIFICATION.md) and several use ambiguous
+    # encodings.  Skip files that belong to a LONGER example name
+    # sharing this prefix.
+    if [ "$crate" = "idas_rs" ] || [ "$crate" = "arkode_rs" ]; then
+      local vref
+      for vref in "$refdir/${name}_"*.out; do
+        [ -f "$vref" ] || continue
+        local base; base="$(basename "$vref" .out)"
+        local suffix="${base#${name}_}"
+        case " $names " in *" ${name}_${suffix%%_*} "*) continue ;; esac
+        local args
+        args="$(awk -v k="$base" '$1 == k { $1=""; print substr($0,2); exit }' \
+                tools/verify_args.map 2>/dev/null)"
+        [ -z "$args" ] && args="$(printf '%s' "$suffix" | tr '_' ' ')"
+        have_any=1
+        # shellcheck disable=SC2086
+        verify_one "$crate" "$name" "$vref" "$base" $args
+      done
+    fi
+
+    if [ $have_any -eq 0 ]; then
+      echo "$crate/$name  NOREF" >> logs/summary.txt
     fi
   done
 }

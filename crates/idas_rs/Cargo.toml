@@ -31,3 +31,6 @@ name = "idasSlCrank_dns"
 
 [[example]]
 name = "idasAkzoNob_dns"
+
+[[example]]
+name = "idasRoberts_FSA_dns"

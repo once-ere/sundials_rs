@@ -119,14 +119,14 @@ cvode example currently hits nli==0; worth fixing for parity/robustness.
 |---|---|
 | idasAkzoNob_ASAi_dns | todo |
 | idasAkzoNob_dns | identical |
-| idasAnalytic_mels | todo |
+| idasAnalytic_mels | identical (incl. idas.init_step_1e-5 CLI variant) |
 | idasFoodWeb_bnd | local-C(byte-identical stdout to local C 7.7.0 -ffp-contract=off build; shipped .out foreign-libm, last-digit h drift at t≥0.7 — same signature as idaFoodWeb_bnd) |
 | idasHeat2D_bnd | identical |
 | idasHeat2D_kry | identical |
 | idasHessian_ASA_FSA | todo |
-| idasKrylovDemo_ls | identical |
+| idasKrylovDemo_ls | identical (incl. _1/_2 nrmfactor arg variants) |
 | idasRoberts_ASAi_dns | todo |
-| idasRoberts_FSA_dns | todo |
+| idasRoberts_FSA_dns | identical (shipped stg_t ref; sim_t/sim_f/stg_f/-nosensi byte-identical to local C build, localref committed) |
 | idasRoberts_dns | identical |
 | idasSlCrank_FSA_dns | todo |
 | idasSlCrank_dns | last-digit(only the G quadrature line, 13th digit vs local C; all 44 trajectory/stats lines byte-identical. Root-caused by bit-level instrumentation: library-side values are bit-identical through the first divergent step — the deviation enters inside the EXAMPLE's own residual, where apple-clang fuses adjacent sin/cos into __sincos_stret (rare 1-ulp differences vs separate calls, first hit at step 74). The C binary itself is flag-fragile at 1e-11 here: -fmath-errno moves G to ...3317697 vs the fused build's ...3378475; ours ...3381925 is 3.5e-13 from the fused build) |

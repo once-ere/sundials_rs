@@ -729,8 +729,26 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       library-side values identical.)
 - [x] idasAkzoNob_dns — IDENTICAL (fresh port; 2nd quadrature example,
       G matches shipped .out byte-for-byte incl. the 16-decimal print)
-- [ ] idasRoberts_FSA_dns — todo (fresh; FSA — settle the
-      FSA-verification watch items here)
+- [x] idasRoberts_FSA_dns — IDENTICAL (first FSA example in the
+      workspace.  Shipped ref `-sensi stg t`: byte-identical.  All
+      other modes verified byte-identical against the local C build
+      (localref variants committed): -sensi sim t / sim f / stg f and
+      -nosensi.  Validates end-to-end: IDASensInit, SIMULTANEOUS
+      (idas_nls_sim) and STAGGERED (idas_nls_stg) correctors with and
+      without sens error control, IDASensEEtolerances,
+      IDASetSensParams (p-copy WATCH ITEM SETTLED — byte-exact),
+      IDACalcIC with sensitivities incl. IDAGetSensConsistentIC,
+      IDAQuadInit + IDAQuadSensInit(None → internal QuadSens DQ),
+      IDAGetSens/IDAGetQuad/IDAGetQuadSens, sens stats in
+      IDAPrintAllStats, and idas_cli via the Analytic_mels
+      idas.init_step variant.  (The IDAfnorm tempv2-aliasing deviation
+      is NOT yet exercised: this example supplies an analytic resS, so
+      the internal sens-DQ IC path stays cold — revisit with a
+      resSDQ-based IC example.)  Harness: verify_examples.sh now runs
+      argument-encoded reference variants (name_argv.out, decode
+      overrides in tools/verify_args.map) for idas_rs/arkode_rs — also
+      auto-verifies idasKrylovDemo_ls_1/_2 and the Analytic_mels
+      variant, all IDENTICAL.
 - [ ] idasSlCrank_FSA_dns — todo (fresh; FSA)
 - [ ] idasRoberts_ASAi_dns — todo (fresh; ASA)
 - [ ] idasAkzoNob_ASAi_dns — todo (fresh; ASA)
