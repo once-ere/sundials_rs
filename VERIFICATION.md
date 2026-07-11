@@ -118,7 +118,7 @@ cvode example currently hits nli==0; worth fixing for parity/robustness.
 | example | status |
 |---|---|
 | idasAkzoNob_ASAi_dns | todo |
-| idasAkzoNob_dns | todo |
+| idasAkzoNob_dns | identical |
 | idasAnalytic_mels | todo |
 | idasFoodWeb_bnd | local-C(byte-identical stdout to local C 7.7.0 -ffp-contract=off build; shipped .out foreign-libm, last-digit h drift at t≥0.7 — same signature as idaFoodWeb_bnd) |
 | idasHeat2D_bnd | identical |

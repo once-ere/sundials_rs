@@ -727,7 +727,8 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       error-control path (IDAQuadTestError feeding err_k into eta) was
       instrumented bit-level against a patched local C build: all
       library-side values identical.)
-- [ ] idasAkzoNob_dns — todo (fresh port)
+- [x] idasAkzoNob_dns — IDENTICAL (fresh port; 2nd quadrature example,
+      G matches shipped .out byte-for-byte incl. the 16-decimal print)
 - [ ] idasRoberts_FSA_dns — todo (fresh; FSA — settle the
       FSA-verification watch items here)
 - [ ] idasSlCrank_FSA_dns — todo (fresh; FSA)
