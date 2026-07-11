@@ -449,3 +449,35 @@ arkode crate (arkode_impl.rs, pinned):
   and their content disjointly. The Hermite bootstrap recursion
   (quartic/quintic) recurses on the impl fn directly (C dispatches
   back to the same op).
+
+### Addendum C.2 — ARKLS + ARKStep contracts (pinned with arkode_ls)
+
+- `lmem` hoisting: C stores the ARKLS interface memory behind the
+  stepper's `void* lmem`; the Rust box lives on `ARKodeMem.lmem`
+  (`Option<Box<ARKLsMem>>`). The `step_getlinmem` op TAKES it out
+  (take/put-back convention); put-back writes the field. The
+  stepper's struct keeps only linit/lsetup/lsolve/lfree +
+  lsolve_type. Steppers implement step_getlinmem as
+  `|m| m.lmem.take()` and step_attachlinsol stores the fn pointers
+  in step_mem and the box in ark_mem.lmem.
+- `ARKLinsolSetupFn` takes `ypred: &mut NVector`: the internal DQ
+  Jacobian perturbs and restores the caller's vector exactly as C
+  does.
+- `step_setjcur` (Rust-only op): C's step_getgammas returns the
+  ADDRESS of the stepper's jcur flag, through which the ARKLS
+  preconditioner setup writes; the Rust op copies jcur out, so
+  arkLsSetup writes back through step_setjcur after a user psetup
+  call.
+- ARKLsMem internal-dispatch flags (mirrors the efun convention):
+  `jac == None + jacDQ` => arkLsDQJac; `jtimes == None + jtimesDQ`
+  => arkLsDQJtimes; `linsys == None + !user_linsys` => arkLsLinSys.
+  C's J_data/Jt_data/A_data/P_data pointers collapse onto
+  ark_mem.user_data.
+- Iterative arkLsSolve builds ATimes/PSolve closures over a
+  RefCell-shared ark_mem (donor cvode_ls pattern) with scaling
+  vectors s1 = rwt, s2 = ewt (rwt aliases ewt when rwt_is_ewt).
+- ARKLS mass-matrix half (ARKLsMassMem, arkLsMass*, arkLsMTimes/
+  MPSetup/MPSolve) is NOT yet ported; step_getmassmem stays None and
+  every arkode_ls path follows the C massmem==NULL branch.
+  ARKodeARKStepMem keeps mass_type (branch conditions) but defers
+  the mass fn-pointer fields.
