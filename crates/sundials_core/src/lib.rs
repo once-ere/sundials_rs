@@ -13,6 +13,23 @@
 #![allow(non_upper_case_globals)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
+/* The following lints fire on deliberately C-faithful constructs
+   (line-for-line translation rule, CLAUDE.md): write!/fprintf strings
+   with trailing \n kept byte-identical to C, manual element loops
+   mirroring C loops, C-shaped signatures and nesting. Newer clippy
+   versions (>= 1.94) flag them; allowed crate-wide rather than
+   deviating from the C text. */
+#![allow(clippy::write_with_newline)]
+#![allow(clippy::manual_memcpy)]
+#![allow(clippy::manual_swap)]
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::drop_non_drop)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::neg_multiply)]
+#![allow(clippy::field_reassign_with_default)]
 #![forbid(unsafe_code)]
 
 // SUNDIALS support layer
