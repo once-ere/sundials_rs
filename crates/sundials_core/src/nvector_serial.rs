@@ -366,6 +366,34 @@ pub fn N_VSpace(v: &NVector) -> (i64, i64) {
     (v.len() as i64, 1)
 }
 
+/// N_VBufSize_Serial: buffer size in bytes (length * sizeof(sunrealtype)).
+pub fn N_VBufSize(x: &NVector, size: &mut i64) -> crate::sundials_errors::SUNErrCode {
+    *size = (x.data.len() as i64) * (std::mem::size_of::<f64>() as i64);
+    crate::sundials_errors::SUN_SUCCESS
+}
+
+/// N_VBufPack_Serial: copy the vector data into a byte buffer (C copies
+/// sunrealtype-by-sunrealtype through a void* buffer; native-endian bytes
+/// here so Pack/Unpack round-trip bit-exactly).
+pub fn N_VBufPack(x: &NVector, buf: &mut [u8]) -> crate::sundials_errors::SUNErrCode {
+    let n = x.data.len();
+    for i in 0..n {
+        buf[8 * i..8 * i + 8].copy_from_slice(&x.data[i].to_ne_bytes());
+    }
+    crate::sundials_errors::SUN_SUCCESS
+}
+
+/// N_VBufUnpack_Serial: copy a byte buffer back into the vector data.
+pub fn N_VBufUnpack(x: &mut NVector, buf: &[u8]) -> crate::sundials_errors::SUNErrCode {
+    let n = x.data.len();
+    for i in 0..n {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&buf[8 * i..8 * i + 8]);
+        x.data[i] = f64::from_ne_bytes(b);
+    }
+    crate::sundials_errors::SUN_SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

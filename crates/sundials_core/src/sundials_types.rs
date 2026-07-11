@@ -51,6 +51,13 @@ pub struct FSAUserData {
     pub user: Box<dyn std::any::Any>,
 }
 
+/// SUNDataIOMode (sundials_types.h): I/O mode for data save/load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SUNDataIOMode {
+    SUNDATAIOMODE_INMEM,
+}
+pub use SUNDataIOMode::SUNDATAIOMODE_INMEM;
+
 /// SUNOutputFormat (sundials_types.h)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SUNOutputFormat {

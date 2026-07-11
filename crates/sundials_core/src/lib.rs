@@ -79,3 +79,5 @@ pub mod sundials_nvector_senswrapper;
 
 // Phase 6 — deferred Phase-1 core files (SUNStepper / adjoint / datanode)
 pub mod sundials_stepper;
+pub mod sundials_datanode;
+pub mod sundatanode_inmem;

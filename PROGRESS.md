@@ -40,8 +40,8 @@ sunnonlinsol_{newton,fixedpoint}.c
 - [ ] sundials/sundials_adjointstepper.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
 - [ ] sundials/sundials_adjointcheckpointscheme.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
 - [ ] sunadjointcheckpointscheme/fixed/sunadjointcheckpointscheme_fixed.c — DEFERRED to Phase 6 start
-- [ ] sundials/sundials_datanode.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
-- [ ] sundials/sundatanode/sundatanode_inmem.c — DEFERRED to Phase 6 start (stl/sunstl_vector.h → Vec)
+- [x] sundials/sundials_datanode.c — committed (enum dispatch; tree owns children, Get* lend &mut borrows, Remove* move the child out; Destroy = drop)
+- [x] sundials/sundatanode/sundatanode_inmem.c — committed (SUNStlVector → Vec, hashmap children own nodes, write-only parent ptr dropped, leaf = SUNMemory bytes [t|BufPack(v)]; N_VBufSize/Pack/Unpack added to nvector_serial)
 
 ### excluded (core)
 sundials_mpi_errors.c (MPI); sundials_xbraid.c (XBraid);
