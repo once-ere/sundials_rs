@@ -36,7 +36,7 @@ sunnonlinsol_{newton,fixedpoint}.c
 - [x] sundomeigest/power/sundomeigest_power.c — committed
 - [x] sundomeigest/arnoldi/sundomeigest_arnoldi.c — committed (dgeev → EISPACK HQR, documented)
 - [x] sundials/sundials_nvector_senswrapper.c — committed
-- [ ] sundials/sundials_stepper.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
+- [x] sundials/sundials_stepper.c — committed (Phase 6 start; ops stay an Option<fn> table since integrators register them one at a time via Set*Fn; content = UserData; C's uninitialized reinit/resetcheckpointindex/getnumsteps ops noted)
 - [ ] sundials/sundials_adjointstepper.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
 - [ ] sundials/sundials_adjointcheckpointscheme.c — DEFERRED to Phase 6 start (only arkode adjoint needs it)
 - [ ] sunadjointcheckpointscheme/fixed/sunadjointcheckpointscheme_fixed.c — DEFERRED to Phase 6 start

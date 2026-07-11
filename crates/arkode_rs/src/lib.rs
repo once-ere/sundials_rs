@@ -45,7 +45,7 @@ pub use sundials_core::sunnonlinsol_fixedpoint;
 pub mod arkode_impl;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
-pub use crate::arkode_impl::*;
+// (arkode_impl::* joins the prelude once the module has content.)
 pub use crate::nvector_serial::*;
 pub use crate::sundials_context::*;
 pub use crate::sundials_errors::*;

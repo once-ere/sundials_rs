@@ -9,6 +9,8 @@ pub type sunrealtype = f64;
 pub type sunindextype = i64;
 /// `sunbooleantype`
 pub type sunbooleantype = bool;
+/// `suncountertype` — SUNDIALS_COUNTER_TYPE (long long, 64-bit counters).
+pub type suncountertype = i64;
 
 pub const SUNFALSE: bool = false;
 pub const SUNTRUE: bool = true;

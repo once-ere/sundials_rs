@@ -76,3 +76,6 @@ pub mod sundials_domeigestimator;
 pub mod sundomeigest_power;
 pub mod sundomeigest_arnoldi;
 pub mod sundials_nvector_senswrapper;
+
+// Phase 6 — deferred Phase-1 core files (SUNStepper / adjoint / datanode)
+pub mod sundials_stepper;
