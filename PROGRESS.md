@@ -683,9 +683,25 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       2 tests: setter delegation + user-data round trip + nested access;
       checkpoint info/current + wrong-interp guard.  Gate green
       2026-07-11 (24 idas_rs tests).)
-- [ ] idas_cli.c — todo (after idaa_io.c; donor ida_cli.rs + quad/sens/
-      B-setter key tables incl. twoint/int-real/int-real-real/int-long
-      pair tables)
+- [x] idas_cli.c — done → `crates/idas_rs/src/idas_cli.rs` (donor
+      ida_cli.rs + IDAS additions, C table order preserved: int keys
+      + quad_err_con/sens_err_con/sens_max_nonlin_iters/
+      quad_sens_err_con; tworeal + quad_scalar_tolerances; NEW twoint
+      table (max_order_b, suppress_alg_b, quad_err_con_b,
+      linear_solution_scaling_b); action + sens_toggle_off/adj_no_sensi;
+      NEW int-real table (sens_dq_method, init_step_b, max_step_b,
+      eps_lin_b, ls_norm_factor_b, increment_factor_b); NEW
+      int-real-real table (scalar_tolerances_b,
+      quad_scalar_tolerances_b); NEW int-long table (max_num_steps_b);
+      default_id "idas"; dispatch order = C (int, long, real, twoint,
+      tworeal, action, int+real, int+long, int+real+real); struct-pair
+      helpers from sundials_core::sundials_cli per the ida_cli.rs donor
+      convention.  6 tests incl. backward-key delegation to the nested
+      solver.  Gate green 2026-07-11 (29 idas_rs tests).
+      *** PHASE 5 LIBRARY COMPLETE: all idas/*.c and idaa*.c ported and
+      compiled; remaining Phase 5 work = idas serial examples
+      (idasRoberts_dns etc., incl. FSA/ASA verification and the
+      FSA-verification watch items). ***
 ### excluded (idas) examples
 idasRoberts_klu, idasRoberts_sps, idasRoberts_ASAi_klu, idasRoberts_ASAi_sps,
 idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
