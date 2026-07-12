@@ -49,6 +49,7 @@ pub fn arkAdaptInit() -> ARKodeHAdaptMem {
         adjust: 0,
         hcontroller: None,
         owncontroller: false,
+        usercontrol: None,
         expstab: None,
         estab_data: None,
         nst_acc: 0,
@@ -93,6 +94,11 @@ pub fn arkPrintAdaptMem(hadapt_mem: &ARKodeHAdaptMem, outfile: &mut dyn std::io:
     if let Some(c) = hadapt_mem.hcontroller.as_ref() {
         let _ = SUNAdaptController_Write(c, outfile);
     }
+    if let Some(uc) = hadapt_mem.usercontrol.as_ref() {
+        let _ = crate::arkode_user_controller::SUNAdaptController_Write_ARKUserControl(
+            uc, outfile,
+        );
+    }
 }
 
 /*---------------------------------------------------------------
@@ -117,7 +123,7 @@ fn arkAdapt_inner(
     let mut h_acc = 0.0;
 
     /* Return with no stepsize adjustment if the controller is NULL */
-    if hadapt_mem.hcontroller.is_none() {
+    if hadapt_mem.hcontroller.is_none() && hadapt_mem.usercontrol.is_none() {
         ark_mem.eta = ONE;
         return ARK_SUCCESS;
     }
@@ -130,22 +136,32 @@ fn arkAdapt_inner(
     } else {
         std::cmp::min(hadapt_mem.p, hadapt_mem.q) + hadapt_mem.adjust
     };
-    /* (an MRI-H-TOL controller carries C's SUNAdaptController_MRIStep
-       wrapper semantics: dispatch through the MRIStep step memory) */
-    let hc = hadapt_mem.hcontroller.as_mut().unwrap();
-    let mut retval = if crate::sundials_adaptcontroller::SUNAdaptController_GetType(hc)
-        == crate::sundials_adaptcontroller::SUNAdaptController_Type::SUN_ADAPTCONTROLLER_MRI_H_TOL
-    {
-        crate::arkode_mristep_controller::SUNAdaptController_EstimateStep_MRIStep(
-            ark_mem,
-            hc,
-            hcur,
-            controller_order,
-            dsm,
-            &mut h_acc,
-        )
+    /* (an ARKUserControl or MRI-H-TOL controller carries C's wrapper
+       semantics: dispatch through ark_mem at the call site) */
+    let mut retval = if let Some(mut uc) = hadapt_mem.usercontrol.take() {
+        let (q, p) = (hadapt_mem.q, hadapt_mem.p);
+        h_acc = hcur; /* generic EstimateStep identity initialization */
+        let ret = crate::arkode_user_controller::SUNAdaptController_EstimateStep_ARKUserControl(
+            ark_mem, &mut uc, q, p, hcur, dsm, &mut h_acc,
+        );
+        hadapt_mem.usercontrol = Some(uc);
+        ret
     } else {
-        SUNAdaptController_EstimateStep(hc, hcur, controller_order, dsm, &mut h_acc)
+        let hc = hadapt_mem.hcontroller.as_mut().unwrap();
+        if crate::sundials_adaptcontroller::SUNAdaptController_GetType(hc)
+            == crate::sundials_adaptcontroller::SUNAdaptController_Type::SUN_ADAPTCONTROLLER_MRI_H_TOL
+        {
+            crate::arkode_mristep_controller::SUNAdaptController_EstimateStep_MRIStep(
+                ark_mem,
+                hc,
+                hcur,
+                controller_order,
+                dsm,
+                &mut h_acc,
+            )
+        } else {
+            SUNAdaptController_EstimateStep(hc, hcur, controller_order, dsm, &mut h_acc)
+        }
     };
     if retval != SUN_SUCCESS {
         arkProcessError(

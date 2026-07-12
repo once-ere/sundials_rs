@@ -57,6 +57,11 @@ pub struct ARKodeHAdaptMem {
 
     pub hcontroller: Option<SUNAdaptController>, /* temporal error controller  */
     pub owncontroller: bool,                     /* hcontroller ownership flag */
+    /* Rust-only slot: "hcontroller is an owned ARKUserControl wrapper"
+       (arkode_user_controller.rs; C stores the wrapper in hcontroller
+       with an ark_mem back-pointer that safe Rust cannot express).
+       Invariant: usercontrol.is_some() => hcontroller.is_none(). */
+    pub usercontrol: Option<Box<crate::arkode_user_controller::ARKUserControlContent>>,
 
     pub expstab: Option<ARKExpStabFn>, /* step stability function        */
     pub estab_data: UserData,          /* user pointer passed to expstab */

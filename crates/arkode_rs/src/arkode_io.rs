@@ -220,6 +220,9 @@ pub fn ARKodeSetInitStep(ark_mem: &mut ARKodeMem, hin: f64) -> i32 {
     ark_mem.h0u = ZERO;
 
     /* Reset error controller (e.g., error and step size history) */
+    if let Some(uc) = ark_mem.hadapt_mem.as_mut().unwrap().usercontrol.as_mut() {
+        let _ = crate::arkode_user_controller::SUNAdaptController_Reset_ARKUserControl(uc);
+    }
     if let Some(hcontroller) = ark_mem.hadapt_mem.as_mut().unwrap().hcontroller.as_mut() {
         let retval = crate::sundials_adaptcontroller::SUNAdaptController_Reset(hcontroller);
         if retval != crate::sundials_errors::SUN_SUCCESS {
@@ -353,6 +356,10 @@ pub fn ARKodeSetStepDirection(ark_mem: &mut ARKodeMem, stepdir: f64) -> i32 {
 
             /* Reset error controller (e.g., error and step size history) */
             if let Some(hadapt_mem) = ark_mem.hadapt_mem.as_mut() {
+                if let Some(uc) = hadapt_mem.usercontrol.as_mut() {
+                    let _ =
+                        crate::arkode_user_controller::SUNAdaptController_Reset_ARKUserControl(uc);
+                }
                 if let Some(hcontroller) = hadapt_mem.hcontroller.as_mut() {
                     let err =
                         crate::sundials_adaptcontroller::SUNAdaptController_Reset(hcontroller);
@@ -513,7 +520,15 @@ pub fn arkReplaceAdaptController(
     let mut leniw: i64 = 0;
 
     /* Remove current SUNAdaptController object
-    (delete if owned, and then nullify pointer) */
+    (delete if owned, and then nullify pointer); an owned ARKUserControl
+    wrapper lives in the usercontrol slot */
+    if let Some(uc) = ark_mem.hadapt_mem.as_mut().unwrap().usercontrol.take() {
+        let _ = crate::arkode_user_controller::SUNAdaptController_Space_ARKUserControl(
+            &uc, &mut lenrw, &mut leniw,
+        );
+        ark_mem.liw -= leniw;
+        ark_mem.lrw -= lenrw;
+    }
     let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
     if hadapt_mem.owncontroller {
         if let Some(hc) = hadapt_mem.hcontroller.as_ref() {
@@ -607,10 +622,18 @@ pub fn arkSetAdaptivityMethod(
     }
 
     /* Remove current SUNAdaptController object
-       (delete if owned, and then nullify pointer) */
+       (delete if owned, and then nullify pointer); an owned
+       ARKUserControl wrapper lives in the usercontrol slot */
     {
         let mut lenrw: i64 = 0;
         let mut leniw: i64 = 0;
+        if let Some(uc) = ark_mem.hadapt_mem.as_mut().unwrap().usercontrol.take() {
+            let _ = crate::arkode_user_controller::SUNAdaptController_Space_ARKUserControl(
+                &uc, &mut lenrw, &mut leniw,
+            );
+            ark_mem.liw -= leniw;
+            ark_mem.lrw -= lenrw;
+        }
         let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
         if hadapt_mem.owncontroller {
             if let Some(hc) = hadapt_mem.hcontroller.as_ref() {
@@ -730,6 +753,88 @@ pub fn arkSetAdaptivityMethod(
         let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
         hadapt_mem.hcontroller = Some(c);
         hadapt_mem.owncontroller = true;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkSetAdaptivityFn:
+
+  Specifies the user-provided time step adaptivity function to use.
+  If 'hfun' is NULL-valued, then the default I controller will
+  be used instead.
+
+  Users should transition to constructing a custom SUNAdaptController
+  object, and providing this directly to the integrator
+  via the time-stepping module *SetController routines.
+  ---------------------------------------------------------------*/
+pub fn arkSetAdaptivityFn(
+    ark_mem: &mut ARKodeMem,
+    hfun: Option<crate::arkode_impl::ARKAdaptFn>,
+    h_data: crate::sundials_types::UserData,
+) -> i32 {
+    use crate::sundials_adaptcontroller::SUNAdaptController_Space;
+    use crate::sundials_errors::SUN_SUCCESS;
+
+    /* Remove current SUNAdaptController object
+       (delete if owned, and then nullify pointer); an owned
+       ARKUserControl wrapper lives in the usercontrol slot */
+    {
+        let mut lenrw: i64 = 0;
+        let mut leniw: i64 = 0;
+        if let Some(uc) = ark_mem.hadapt_mem.as_mut().unwrap().usercontrol.take() {
+            let _ = crate::arkode_user_controller::SUNAdaptController_Space_ARKUserControl(
+                &uc, &mut lenrw, &mut leniw,
+            );
+            ark_mem.liw -= leniw;
+            ark_mem.lrw -= lenrw;
+        }
+        let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+        if hadapt_mem.owncontroller {
+            if let Some(hc) = hadapt_mem.hcontroller.as_ref() {
+                let retval = SUNAdaptController_Space(hc, &mut lenrw, &mut leniw);
+                if retval == SUN_SUCCESS {
+                    ark_mem.liw -= leniw;
+                    ark_mem.lrw -= lenrw;
+                }
+            }
+            /* SUNAdaptController_Destroy = drop */
+            let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+            hadapt_mem.owncontroller = false;
+        }
+        ark_mem.hadapt_mem.as_mut().unwrap().hcontroller = None;
+    }
+
+    /* Create new SUNAdaptController object depending on NULL-ity of 'hfun' */
+    match hfun {
+        None => {
+            let c = crate::sunadaptcontroller_soderlind::SUNAdaptController_I();
+            /* Attach new SUNAdaptController object */
+            let mut lenrw: i64 = 0;
+            let mut leniw: i64 = 0;
+            let retval = SUNAdaptController_Space(&c, &mut lenrw, &mut leniw);
+            if retval == SUN_SUCCESS {
+                ark_mem.liw += leniw;
+                ark_mem.lrw += lenrw;
+            }
+            let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+            hadapt_mem.hcontroller = Some(c);
+            hadapt_mem.owncontroller = true;
+        }
+        Some(hfun) => {
+            let uc = crate::arkode_user_controller::ARKUserControl(hfun, h_data);
+            /* Attach new SUNAdaptController object (the ARKUserControl
+               wrapper occupies the usercontrol slot; ownership implied) */
+            let mut lenrw: i64 = 0;
+            let mut leniw: i64 = 0;
+            let _ = crate::arkode_user_controller::SUNAdaptController_Space_ARKUserControl(
+                &uc, &mut lenrw, &mut leniw,
+            );
+            ark_mem.liw += leniw;
+            ark_mem.lrw += lenrw;
+            ark_mem.hadapt_mem.as_mut().unwrap().usercontrol = Some(uc);
+        }
     }
 
     ARK_SUCCESS
@@ -1116,6 +1221,9 @@ pub fn ARKodeWriteParameters(ark_mem: &mut ARKodeMem, fp: &mut dyn std::io::Writ
         }
         if let Some(hc) = ha.hcontroller.as_mut() {
             let _ = crate::sundials_adaptcontroller::SUNAdaptController_Write(hc, fp);
+        }
+        if let Some(uc) = ark_mem.hadapt_mem.as_ref().unwrap().usercontrol.as_ref() {
+            let _ = crate::arkode_user_controller::SUNAdaptController_Write_ARKUserControl(uc, fp);
         }
     }
 

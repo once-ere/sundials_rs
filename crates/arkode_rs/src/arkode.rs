@@ -491,6 +491,9 @@ pub fn arkInit(ark_mem: &mut ARKodeMem, t0: f64, y0: &NVector, init_type: i32) -
 
         /* Reset error controller object */
         let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+        if let Some(uc) = hadapt_mem.usercontrol.as_mut() {
+            let _ = crate::arkode_user_controller::SUNAdaptController_Reset_ARKUserControl(uc);
+        }
         if let Some(hcontroller) = hadapt_mem.hcontroller.as_mut() {
             let retval = crate::sundials_adaptcontroller::SUNAdaptController_Reset(hcontroller);
             if retval != crate::sundials_errors::SUN_SUCCESS {
@@ -1004,17 +1007,23 @@ pub fn arkCompleteStep(ark_mem: &mut ARKodeMem, dsm: f64) -> i32 {
        MRI-H-TOL controller carries C's SUNAdaptController_MRIStep
        wrapper semantics: dispatch through the MRIStep step memory) */
     let (h, _eta) = (ark_mem.h, ark_mem.eta);
-    if ark_mem.hadapt_mem.as_ref().unwrap().hcontroller.is_some() {
+    if ark_mem.hadapt_mem.as_ref().unwrap().hcontroller.is_some()
+        || ark_mem.hadapt_mem.as_ref().unwrap().usercontrol.is_some()
+    {
         let mut hadapt_mem = ark_mem.hadapt_mem.take().unwrap();
-        let hc = hadapt_mem.hcontroller.as_mut().unwrap();
-        let retval = if crate::sundials_adaptcontroller::SUNAdaptController_GetType(hc)
-            == crate::sundials_adaptcontroller::SUNAdaptController_Type::SUN_ADAPTCONTROLLER_MRI_H_TOL
-        {
-            crate::arkode_mristep_controller::SUNAdaptController_UpdateH_MRIStep(
-                ark_mem, hc, h, dsm,
-            )
+        let retval = if let Some(uc) = hadapt_mem.usercontrol.as_mut() {
+            crate::arkode_user_controller::SUNAdaptController_UpdateH_ARKUserControl(uc, h, dsm)
         } else {
-            crate::sundials_adaptcontroller::SUNAdaptController_UpdateH(hc, h, dsm)
+            let hc = hadapt_mem.hcontroller.as_mut().unwrap();
+            if crate::sundials_adaptcontroller::SUNAdaptController_GetType(hc)
+                == crate::sundials_adaptcontroller::SUNAdaptController_Type::SUN_ADAPTCONTROLLER_MRI_H_TOL
+            {
+                crate::arkode_mristep_controller::SUNAdaptController_UpdateH_MRIStep(
+                    ark_mem, hc, h, dsm,
+                )
+            } else {
+                crate::sundials_adaptcontroller::SUNAdaptController_UpdateH(hc, h, dsm)
+            }
         };
         ark_mem.hadapt_mem = Some(hadapt_mem);
         if retval != crate::sundials_errors::SUN_SUCCESS {

@@ -157,6 +157,18 @@ pub fn ARKStepSetAdaptivityMethod(
 }
 
 /*---------------------------------------------------------------
+  ARKStepSetAdaptivityFn: user-callable deprecated wrapper around
+  arkSetAdaptivityFn.
+  ---------------------------------------------------------------*/
+pub fn ARKStepSetAdaptivityFn(
+    ark_mem: &mut ARKodeMem,
+    hfun: Option<crate::arkode_impl::ARKAdaptFn>,
+    h_data: crate::sundials_types::UserData,
+) -> i32 {
+    crate::arkode_io::arkSetAdaptivityFn(ark_mem, hfun, h_data)
+}
+
+/*---------------------------------------------------------------
   arkStep_SetRelaxFn:
 
   Sets up the relaxation module using ARKStep's utility routines.
