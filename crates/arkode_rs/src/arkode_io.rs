@@ -1914,3 +1914,81 @@ pub fn ARKodeSetAccumulatedErrorType(
     ark_mem.AccumErrorType = accum_type;
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKodeSetConstraints:
+
+  Activates or deactivates inequality constraint checking.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetConstraints(
+    ark_mem: &mut ARKodeMem,
+    constraints: Option<&crate::nvector_serial::NVector>,
+) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_ILL_INPUT, ARK_STEPPER_UNSUPPORTED,
+        HALF, MSG_ARK_BAD_CONSTR, ONE};
+    use crate::nvector_serial::{N_VMaxNorm, N_VScale};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive && constraints.is_some() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetConstraints",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* If there are no constraints, destroy data structures */
+    let constraints = match constraints {
+        None => {
+            if ark_mem.constraints.take().is_some() {
+                ark_mem.lrw -= ark_mem.lrw1;
+                ark_mem.liw -= ark_mem.liw1;
+            }
+            return ARK_SUCCESS;
+        }
+        Some(c) => c,
+    };
+
+    /* (C also tests that the required vector ops are defined; the
+    serial NVector provides them all) */
+
+    /* Check the constraints vector */
+    let temptest = N_VMaxNorm(constraints);
+    if temptest > 2.5 || temptest < HALF {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSetConstraints",
+            file!(),
+            MSG_ARK_BAD_CONSTR,
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* Allocate the internal constraints vector (if necessary) */
+    if ark_mem.constraints.is_none() {
+        ark_mem.constraints = Some(crate::nvector_serial::NVector::new(constraints.data.len()));
+        ark_mem.lrw += ark_mem.lrw1;
+        ark_mem.liw += ark_mem.liw1;
+    }
+
+    /* Load the constraints vector */
+    N_VScale(ONE, constraints, ark_mem.constraints.as_mut().unwrap());
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumConstrFails:
+
+  Returns the current number of constraint fails
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumConstrFails(ark_mem: &mut ARKodeMem, nconstrfails: &mut i64) -> i32 {
+    *nconstrfails = ark_mem.nconstrfails;
+    ARK_SUCCESS
+}

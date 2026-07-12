@@ -947,6 +947,7 @@ pub const MSG_ARK_NULL_Y0: &str = "y0 = NULL illegal.";
 pub const MSG_ARK_NULL_SUNCTX: &str = "sunctx = NULL illegal.";
 pub const MSG_ARK_BAD_HMIN_HMAX: &str = "Inconsistent step size limits: hmin > hmax.";
 pub const MSG_ARK_NO_ROOT: &str = "Rootfinding was not initialized.";
+pub const MSG_ARK_BAD_CONSTR: &str = "Illegal values in constraints vector.";
 pub const MSG_ARK_NULL_F: &str = "Must specify at least one of fe, fi (both NULL).";
 pub const MSG_ARK_NULL_G: &str = "g = NULL illegal.";
 pub const MSG_ARK_NULL_DKY: &str = "dky = NULL illegal.";

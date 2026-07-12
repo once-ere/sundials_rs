@@ -149,7 +149,7 @@ example.
 | ark_advection_diffusion_reaction_splitting | todo |
 | ark_analytic | IDENTICAL x2 (shipped refs; first implicit ARKStep example — DIRK + Newton + dense ARKLS + SetLinear; the scalar_tolerances/table_names CLI arg variant passes via ARKodeSetOptions + arkStep_SetOptions with an ESDIRK547L2SA table override) |
 | ark_analytic_lsrk (+_varjac, _domeigest, _domeigest arg variant, _ssprk) | LOCAL-C x5 (byte-identical to fresh 7.7.0 C build incl. all stats; shipped refs stale; covers RKL/RKC STS with user dom-eig fn, power-iteration SUNDomEigEstimator with warmup/max_iters options, and the SSP(9,3) path) |
-| ark_analytic_mels | todo |
+| ark_analytic_mels | IDENTICAL (shipped ref; custom matrix-embedded SUNLinearSolver via the core CustomLinSol trait — solve callback receives (t, gamma, user_data) per the pinned cvAnalytic_mels adaptation; exposed a latent bug where linit ran with step_mem detached so the MELS lsetup-disable no-op'd) |
 | ark_analytic_nonlin | IDENTICAL (shipped ref; the FIRST arkode example, verified byte-exact) |
 | ark_analytic_partitioned | LOCAL-C x5 (splitting default, forcing, and BEST_2_2_2/RUTH_3_3_2/YOSHIDA_8_6_2 named-coefficient variants all byte-identical to a fresh 7.7.0 C build; shipped refs predate the SUN_TABLE_WIDTH 28->29 change; exercises SplittingStep + ForcingStep over ERKStep/ARKStep-backed SUNSteppers incl. ARKStep inner forcing) |
 | ark_brusselator | IDENTICAL (shipped ref; exercises deduce_rhs + SetAutonomous/TrivialPredAutonomous residual + Lagrange interpolant + Newton failure-retry paths, verified byte-exact) |
@@ -171,6 +171,6 @@ example.
 | ark_onewaycouple_mri | todo |
 | ark_reaction_diffusion_mri | todo |
 | ark_robertson | IDENTICAL (shipped ref; stiff DIRK + arkPredict_MaximumOrder (predictor 1) + full ARKodePrintAllStats TABLE output to stdout, verified byte-exact) |
-| ark_robertson_constraints | todo |
+| ark_robertson_constraints | IDENTICAL (shipped ref; exercises ARKodeSetConstraints + the arkCheckConstraints path and ARKodeGetNumConstrFails, verified byte-exact on first run) |
 | ark_robertson_root | IDENTICAL (shipped ref; exercises ARKodeRootInit/GetRootInfo end-to-end — Illinois rootfinder, SVtolerances, arkHin auto initial step — verified byte-exact) |
 | ark_twowaycouple_mri | todo |

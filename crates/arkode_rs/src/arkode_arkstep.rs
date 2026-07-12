@@ -883,7 +883,18 @@ fn arkStep_Init_inner(
     if step_mem.mass_type != MASS_IDENTITY {
         /* Call minit (if it exists) */
         if let Some(minit) = step_mem.minit {
+            /* run with step_mem re-installed: arkLsMassInitialize
+            re-enters step_disablemsetup */
+            let owned = Box::new(std::mem::take(step_mem));
+            ark_mem.step_mem = Some(owned);
             let retval = minit(ark_mem);
+            let owned = ark_mem
+                .step_mem
+                .take()
+                .unwrap()
+                .downcast::<ARKodeARKStepMem>()
+                .unwrap();
+            *step_mem = *owned;
             if retval != 0 {
                 arkProcessError(
                     Some(ark_mem),
@@ -921,9 +932,20 @@ fn arkStep_Init_inner(
         }
     }
 
-    /* Call linit (if it exists) */
+    /* Call linit (if it exists) -- with step_mem re-installed, since
+    arkLsInitialize re-enters step ops (step_disablelsetup for
+    matrix-embedded / matrix-free configurations) */
     if let Some(linit) = step_mem.linit {
+        let owned = Box::new(std::mem::take(step_mem));
+        ark_mem.step_mem = Some(owned);
         let retval = linit(ark_mem);
+        let owned = ark_mem
+            .step_mem
+            .take()
+            .unwrap()
+            .downcast::<ARKodeARKStepMem>()
+            .unwrap();
+        *step_mem = *owned;
         if retval != 0 {
             arkProcessError(
                 Some(ark_mem),

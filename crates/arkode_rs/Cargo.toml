@@ -67,3 +67,11 @@ path = "examples/ark_brusselator_mri.rs"
 [[example]]
 name = "ark_brusselator_1D_mri"
 path = "examples/ark_brusselator_1D_mri.rs"
+
+[[example]]
+name = "ark_robertson_constraints"
+path = "examples/ark_robertson_constraints.rs"
+
+[[example]]
+name = "ark_analytic_mels"
+path = "examples/ark_analytic_mels.rs"

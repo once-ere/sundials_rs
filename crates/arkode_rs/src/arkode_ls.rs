@@ -1733,7 +1733,37 @@ fn arkLsSolve_inner(
     }
 
     /* Call solver, and copy x to b */
-    let retval = if arkls_mem.LS.ls_type() == SUNLINEARSOLVER_DIRECT {
+    let retval = if matches!(arkls_mem.LS, LinearSolver::Custom(_)) {
+        /* matrix-embedded solver: gets (t, gamma, user_data) — the C
+           callback instead queries ARKodeGetNonlinearSystemData through
+           its stored arkode_mem pointer (pinned CustomLinSol
+           adaptation, see cvode_ls.rs) */
+        let getgammas = ark_mem.step_getgammas.unwrap();
+        let mut gamma = ZERO;
+        let mut gamrat = ZERO;
+        let mut jcur = SUNFALSE;
+        let mut dgamma_fail = SUNFALSE;
+        arkls_mem.last_flag =
+            getgammas(ark_mem, &mut gamma, &mut gamrat, &mut jcur, &mut dgamma_fail);
+        if arkls_mem.last_flag != 0 {
+            arkProcessError(
+                Some(ark_mem),
+                arkls_mem.last_flag,
+                line!(),
+                "arkLsSolve",
+                file!(),
+                "An error occurred in ark_step_getgammas",
+            );
+            return arkls_mem.last_flag;
+        }
+        let ARKLsMem { LS, x, .. } = arkls_mem;
+        if let LinearSolver::Custom(cls) = LS {
+            let ARKodeMem { user_data, tcur, .. } = ark_mem;
+            cls.solve(x, b, delta, *tcur, gamma, user_data)
+        } else {
+            unreachable!()
+        }
+    } else if arkls_mem.LS.ls_type() == SUNLINEARSOLVER_DIRECT {
         let ARKLsMem { LS, A, x, .. } = arkls_mem;
         match (LS, A.as_mut()) {
             (LinearSolver::Dense(dls), Some(SUNMatrix::Dense(am))) => dls.solve(am, x, b),
