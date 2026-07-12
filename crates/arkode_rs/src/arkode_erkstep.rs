@@ -30,13 +30,15 @@ use crate::arkode_erkstep_impl::{
     ERKSTEP_DEFAULT_8, ERKSTEP_DEFAULT_9, MSG_ERKSTEP_NO_MEM,
 };
 use crate::arkode_impl::{
-    arkProcessError, ARKRhsFn, ARKVecResizeFn, ARKodeMem, ARK_ACCUMERROR_NONE,
+    arkProcessError, ARKRelaxJacFn, ARKRhsFn, ARKVecResizeFn, ARKodeMem, ARK_ACCUMERROR_NONE,
     ARK_FULLRHS_END, ARK_FULLRHS_OTHER, ARK_FULLRHS_START, ARK_ILL_INPUT, ARK_INVALID_TABLE,
     ARK_MEM_NULL, ARK_NO_MALLOC, ARK_POSTPROCESS_STAGE_FAIL, ARK_POSTPROCESS_STEP_FAIL,
-    ARK_PRERHSFN_FAIL, ARK_RHSFUNC_FAIL, ARK_SUCCESS, ARK_UNREC_RHSFUNC_ERR, ARK_VECTOROP_ERR,
-    ARK_WARNING, FIRST_INIT, ONE, RESET_INIT, RESIZE_INIT, ZERO,
+    ARK_PRERHSFN_FAIL, ARK_RELAX_JAC_FAIL, ARK_RHSFUNC_FAIL, ARK_SUCCESS,
+    ARK_UNREC_RHSFUNC_ERR, ARK_VECTOROP_ERR, ARK_WARNING, FIRST_INIT, ONE, RESET_INIT,
+    RESIZE_INIT, ZERO,
 };
-use crate::nvector_serial::{N_VLinearCombination, N_VScale, N_VWrmsNorm, NVector};
+use crate::arkode_relaxation_impl::ARK_RELAX_JAC_RECV;
+use crate::nvector_serial::{N_VDotProd, N_VLinearCombination, N_VScale, N_VWrmsNorm, NVector};
 use crate::sundials_math::SUNRabs;
 use crate::sundials_types::UserData;
 use crate::sundials_utils::fmt_g;
@@ -129,7 +131,7 @@ pub fn ERKStepCreate(
     ark_mem.step_printmem = Some(erkStep_PrintMem);
     ark_mem.step_setoptions = Some(crate::arkode_erkstep_io::erkStep_SetOptions);
     ark_mem.step_setdefaults = Some(crate::arkode_erkstep_io::erkStep_SetDefaults);
-    ark_mem.step_setrelaxfn = None; /* erkStep_SetRelaxFn: relaxation module pending */
+    ark_mem.step_setrelaxfn = Some(crate::arkode_erkstep_io::erkStep_SetRelaxFn);
     ark_mem.step_setorder = Some(crate::arkode_erkstep_io::erkStep_SetOrder);
     ark_mem.step_getnumrhsevals = Some(crate::arkode_erkstep_io::erkStep_GetNumRhsEvals);
     ark_mem.step_getestlocalerrors = Some(crate::arkode_erkstep_io::erkStep_GetEstLocalErrors);
@@ -1384,6 +1386,106 @@ pub fn erkStep_SetInnerForcing(
 
     ark_mem.step_mem = Some(step_mem);
     ARK_SUCCESS
+}
+
+/*===============================================================
+  Internal utility routines for relaxation
+  ===============================================================*/
+
+/* -----------------------------------------------------------------------------
+ * erkStep_RelaxDeltaE
+ *
+ * Computes the change in the relaxation functions for use in relaxation methods
+ * delta_e = h * sum_i b_i * <rjac(z_i), f_i>
+ * ---------------------------------------------------------------------------*/
+pub fn erkStep_RelaxDeltaE(
+    ark_mem: &mut ARKodeMem,
+    relax_jac_fn: ARKRelaxJacFn,
+    num_relax_jac_evals: &mut i64,
+    delta_e_out: &mut f64,
+) -> i32 {
+    /* Access the stepper memory structure */
+    let step_mem = match erkStep_AccessStepMem(ark_mem, "erkStep_RelaxDeltaE") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+    let retval = erkStep_RelaxDeltaE_inner(
+        ark_mem,
+        &step_mem,
+        relax_jac_fn,
+        num_relax_jac_evals,
+        delta_e_out,
+    );
+    ark_mem.step_mem = Some(step_mem);
+    retval
+}
+
+fn erkStep_RelaxDeltaE_inner(
+    ark_mem: &mut ARKodeMem,
+    step_mem: &ARKodeERKStepMem,
+    relax_jac_fn: ARKRelaxJacFn,
+    num_relax_jac_evals: &mut i64,
+    delta_e_out: &mut f64,
+) -> i32 {
+    /* z_stage = tempv2, J_relax = tempv3 */
+
+    /* Initialize output */
+    *delta_e_out = ZERO;
+
+    for i in 0..step_mem.stages as usize {
+        /* Construct stages z[i] = y_n + h * sum_j Ae[i,j] Fe[j] + Ai[i,j] Fi[j] */
+        let B = step_mem.B.as_ref().unwrap();
+        let mut cvals: Vec<f64> = Vec::with_capacity(i + 1);
+        let mut Xvecs: Vec<&NVector> = Vec::with_capacity(i + 1);
+
+        cvals.push(ONE);
+        Xvecs.push(&ark_mem.yn);
+
+        for j in 0..i {
+            cvals.push(ark_mem.h * B.A[i][j]);
+            Xvecs.push(&step_mem.F[j]);
+        }
+
+        let retval = N_VLinearCombination(cvals.len() as i32, &cvals, &Xvecs, &mut ark_mem.tempv2);
+        if retval != 0 {
+            return ARK_VECTOROP_ERR;
+        }
+
+        /* Evaluate the Jacobian at z_i */
+        let retval = {
+            let ARKodeMem { tempv2, tempv3, user_data, .. } = ark_mem;
+            relax_jac_fn(tempv2, tempv3, user_data)
+        };
+        *num_relax_jac_evals += 1;
+        if retval < 0 {
+            return ARK_RELAX_JAC_FAIL;
+        }
+        if retval > 0 {
+            return ARK_RELAX_JAC_RECV;
+        }
+
+        /* Update estimates (serial build: no nvdotprodlocal /
+           nvdotprodmultiallreduce) */
+        *delta_e_out += B.b[i] * N_VDotProd(&ark_mem.tempv3, &step_mem.F[i]);
+    }
+
+    *delta_e_out *= ark_mem.h;
+
+    ARK_SUCCESS
+}
+
+/* -----------------------------------------------------------------------------
+ * erkStep_GetOrder
+ *
+ * Returns the method order
+ * ---------------------------------------------------------------------------*/
+pub fn erkStep_GetOrder(ark_mem: &mut ARKodeMem) -> i32 {
+    ark_mem
+        .step_mem
+        .as_ref()
+        .and_then(|b| b.downcast_ref::<ARKodeERKStepMem>())
+        .map(|sm| sm.q)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

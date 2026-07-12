@@ -15,6 +15,7 @@
  * printed every 1.0 units of time (10 total).  Run statistics
  * (optional outputs) are printed at the end.
  * -----------------------------------------------------------------*/
+#![allow(non_snake_case)]
 
 use arkode_rs::arkode::{ARKodeEvolve, ARKodeFree, ARKodeSStolerances};
 use arkode_rs::arkode_io::{ARKodePrintAllStats, ARKodeSetMaxNumSteps, ARKodeSetUserData};

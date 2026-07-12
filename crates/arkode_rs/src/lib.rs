@@ -87,6 +87,7 @@ pub mod arkode_interp;
 pub mod arkode_adapt;
 pub mod arkode_root;
 pub mod arkode_io;
+pub mod arkode_relaxation;
 pub mod arkode_ls_impl;
 pub mod arkode_ls;
 pub mod arkode_bandpre_impl;

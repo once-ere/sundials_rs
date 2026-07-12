@@ -31,6 +31,7 @@ use crate::arkode_butcher::{ARKodeButcherTable_IsStifflyAccurate, ARKodeButcherT
 use crate::arkode_butcher_dirk::ARKodeButcherTable_LoadDIRK;
 use crate::arkode_butcher_erk::ARKodeButcherTable_LoadERK;
 use crate::arkode_impl::*;
+use crate::arkode_relaxation_impl::ARK_RELAX_JAC_RECV;
 use crate::nvector_serial::*;
 use crate::sundials_math::*;
 use crate::sundials_types::*;
@@ -90,7 +91,7 @@ pub fn ARKStepCreate(
     ark_mem.step_setdefaults = Some(crate::arkode_arkstep_io::arkStep_SetDefaults);
     ark_mem.step_computestate = Some(arkStep_ComputeState);
     ark_mem.step_setoptions = Some(crate::arkode_arkstep_io::arkStep_SetOptions);
-    ark_mem.step_setrelaxfn = None; /* arkStep_SetRelaxFn: relaxation module pending */
+    ark_mem.step_setrelaxfn = Some(crate::arkode_arkstep_io::arkStep_SetRelaxFn);
     ark_mem.step_setorder = Some(crate::arkode_arkstep_io::arkStep_SetOrder);
     ark_mem.step_setnonlinearsolver =
         Some(crate::arkode_arkstep_nls::arkStep_SetNonlinearSolver);
@@ -125,7 +126,7 @@ pub fn ARKStepCreate(
     ark_mem.step_supports_adaptive = true;
     ark_mem.step_supports_implicit = true;
     ark_mem.step_supports_massmatrix = true;
-    ark_mem.step_supports_relaxation = false; /* SUNTRUE in C; relaxation pending */
+    ark_mem.step_supports_relaxation = true;
     ark_mem.step_mem = Some(step_mem);
 
     /* Set default values for optional inputs */
@@ -3130,4 +3131,174 @@ pub(crate) fn arkStep_ComputeSolutions_MassFixed(
     }
 
     ARK_SUCCESS
+}
+
+/*===============================================================
+  Internal utility routines for relaxation
+  ===============================================================*/
+
+/* -----------------------------------------------------------------------------
+ * arkStep_RelaxDeltaE
+ *
+ * Computes the change in the relaxation functions for use in relaxation methods
+ * delta_e = h * sum_i b_i * <relax_jac(z_i), f_i>
+ *
+ * With implicit and IMEX methods it is necessary to store the method stages
+ * (or compute the delta_e estimate along the way) to avoid inconsistencies
+ * between z_i, F(z_i), and J_relax(z_i) that arise from reconstructing stages
+ * from stored RHS values like with ERK methods. As such the take step function
+ * stores the stages along the way but only when there is an implicit RHS. When
+ * a fixed mass matrix is present the stages are also stored to avoid additional
+ * mass matrix solves in reconstructing the stages for an ERK method.
+ * ---------------------------------------------------------------------------*/
+pub fn arkStep_RelaxDeltaE(
+    ark_mem: &mut ARKodeMem,
+    relax_jac_fn: ARKRelaxJacFn,
+    num_relax_jac_evals: &mut i64,
+    delta_e_out: &mut f64,
+) -> i32 {
+    /* Access the stepper memory structure */
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "arkStep_RelaxDeltaE") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+    let retval = arkStep_RelaxDeltaE_inner(
+        ark_mem,
+        &mut step_mem,
+        relax_jac_fn,
+        num_relax_jac_evals,
+        delta_e_out,
+    );
+    ark_mem.step_mem = Some(step_mem);
+    retval
+}
+
+fn arkStep_RelaxDeltaE_inner(
+    ark_mem: &mut ARKodeMem,
+    step_mem: &mut ARKodeARKStepMem,
+    relax_jac_fn: ARKRelaxJacFn,
+    num_relax_jac_evals: &mut i64,
+    delta_e_out: &mut f64,
+) -> i32 {
+    /* z_stage = tempv2 (or the stored step_mem.z[i]), J_relax = tempv3 */
+
+    /* the temporary RHS alias locations of the C rhs_tmp pointer */
+    enum RhsTmp {
+        Z,
+        Fe,
+        Fi,
+    }
+
+    /* Initialize output */
+    *delta_e_out = ZERO;
+
+    for i in 0..step_mem.stages as usize {
+        let use_stored = step_mem.implicit || step_mem.mass_type == MASS_FIXED;
+        if !use_stored {
+            /* Reconstruct explicit stages */
+            let Be = step_mem.Be.as_ref().unwrap();
+            let mut cvals: Vec<f64> = Vec::with_capacity(i + 1);
+            let mut Xvecs: Vec<&NVector> = Vec::with_capacity(i + 1);
+
+            cvals.push(ONE);
+            Xvecs.push(&ark_mem.yn);
+
+            for j in 0..i {
+                cvals.push(ark_mem.h * Be.A[i][j]);
+                Xvecs.push(&step_mem.Fe[j]);
+            }
+
+            let retval =
+                N_VLinearCombination(cvals.len() as i32, &cvals, &Xvecs, &mut ark_mem.tempv2);
+            if retval != 0 {
+                return ARK_VECTOROP_ERR;
+            }
+        }
+
+        /* Evaluate the Jacobian at z_i */
+        let retval = if use_stored {
+            /* Use stored stages */
+            let ARKodeMem { tempv3, user_data, .. } = ark_mem;
+            relax_jac_fn(&step_mem.z[i], tempv3, user_data)
+        } else {
+            let ARKodeMem { tempv2, tempv3, user_data, .. } = ark_mem;
+            relax_jac_fn(tempv2, tempv3, user_data)
+        };
+        *num_relax_jac_evals += 1;
+        if retval < 0 {
+            return ARK_RELAX_JAC_FAIL;
+        }
+        if retval > 0 {
+            return ARK_RELAX_JAC_RECV;
+        }
+
+        /* Reset temporary RHS alias (rhs_tmp = z_stage, which is the
+           stored z[i] whenever it is written below), then compute
+           delta_e = h * sum_i b_i * <relax_jac(z_i), f_i> */
+        let bi: f64;
+        let rhs_tmp: RhsTmp;
+        if step_mem.explicit && step_mem.implicit {
+            let be_b = step_mem.Be.as_ref().unwrap().b[i];
+            let bi_b = step_mem.Bi.as_ref().unwrap().b[i];
+            {
+                let ARKodeARKStepMem { z, Fe, Fi, .. } = step_mem;
+                N_VLinearSum(be_b, &Fe[i], bi_b, &Fi[i], &mut z[i]);
+            }
+            bi = ONE;
+            rhs_tmp = RhsTmp::Z;
+        } else if step_mem.explicit {
+            if step_mem.mass_type == MASS_FIXED {
+                let ARKodeARKStepMem { z, Fe, .. } = step_mem;
+                N_VScale(ONE, &Fe[i], &mut z[i]);
+                rhs_tmp = RhsTmp::Z;
+            } else {
+                rhs_tmp = RhsTmp::Fe;
+            }
+            bi = step_mem.Be.as_ref().unwrap().b[i];
+        } else {
+            if step_mem.mass_type == MASS_FIXED {
+                let ARKodeARKStepMem { z, Fi, .. } = step_mem;
+                N_VScale(ONE, &Fi[i], &mut z[i]);
+                rhs_tmp = RhsTmp::Z;
+            } else {
+                rhs_tmp = RhsTmp::Fi;
+            }
+            bi = step_mem.Bi.as_ref().unwrap().b[i];
+        }
+
+        if step_mem.mass_type == MASS_FIXED {
+            let msolve = step_mem.msolve.unwrap();
+            let retval = msolve(ark_mem, &mut step_mem.z[i], step_mem.nlscoef);
+            if retval != 0 {
+                return ARK_MASSSOLVE_FAIL;
+            }
+        }
+
+        /* Update estimate of relaxation function change (serial build:
+           no nvdotprodlocal/nvdotprodmultiallreduce) */
+        let rhs_ref: &NVector = match rhs_tmp {
+            RhsTmp::Z => &step_mem.z[i],
+            RhsTmp::Fe => &step_mem.Fe[i],
+            RhsTmp::Fi => &step_mem.Fi[i],
+        };
+        *delta_e_out += bi * N_VDotProd(&ark_mem.tempv3, rhs_ref);
+    }
+
+    *delta_e_out *= ark_mem.h;
+
+    ARK_SUCCESS
+}
+
+/* -----------------------------------------------------------------------------
+ * arkStep_GetOrder
+ *
+ * Returns the method order
+ * ---------------------------------------------------------------------------*/
+pub fn arkStep_GetOrder(ark_mem: &mut ARKodeMem) -> i32 {
+    ark_mem
+        .step_mem
+        .as_ref()
+        .and_then(|b| b.downcast_ref::<ARKodeARKStepMem>())
+        .map(|sm| sm.q)
+        .unwrap_or(0)
 }

@@ -239,6 +239,25 @@ pub fn ERKStepGetTimestepperStats(
   ===============================================================*/
 
 /*---------------------------------------------------------------
+  erkStep_SetRelaxFn:
+
+  Sets up the relaxation module using ERKStep's utility routines.
+  ---------------------------------------------------------------*/
+pub fn erkStep_SetRelaxFn(
+    ark_mem: &mut ARKodeMem,
+    rfn: Option<crate::arkode_impl::ARKRelaxFn>,
+    rjac: Option<crate::arkode_impl::ARKRelaxJacFn>,
+) -> i32 {
+    crate::arkode_relaxation::arkRelaxCreate(
+        ark_mem,
+        rfn,
+        rjac,
+        Some(crate::arkode_erkstep::erkStep_RelaxDeltaE),
+        Some(crate::arkode_erkstep::erkStep_GetOrder),
+    )
+}
+
+/*---------------------------------------------------------------
   erkStep_SetDefaults:
 
   Resets all ERKStep optional inputs to their default values.

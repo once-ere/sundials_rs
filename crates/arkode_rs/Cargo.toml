@@ -75,3 +75,15 @@ path = "examples/ark_robertson_constraints.rs"
 [[example]]
 name = "ark_analytic_mels"
 path = "examples/ark_analytic_mels.rs"
+
+[[example]]
+name = "ark_conserved_exp_entropy_ark"
+path = "examples/ark_conserved_exp_entropy_ark.rs"
+
+[[example]]
+name = "ark_conserved_exp_entropy_erk"
+path = "examples/ark_conserved_exp_entropy_erk.rs"
+
+[[example]]
+name = "ark_dissipated_exp_entropy"
+path = "examples/ark_dissipated_exp_entropy.rs"

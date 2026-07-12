@@ -2145,7 +2145,7 @@ pub fn ARKodeEvolve(
 ) -> i32 {
     use crate::arkode_impl::{
         ARK_ERR_FAILURE, ARK_ILL_INPUT, ARK_NORMAL, ARK_NO_MALLOC,
-        ARK_ONE_STEP, ARK_PRESTEPFN_FAIL, ARK_RELAX_MEM_NULL, ARK_RETRY_STEP, ARK_ROOT_RETURN,
+        ARK_ONE_STEP, ARK_PRESTEPFN_FAIL, ARK_RETRY_STEP, ARK_ROOT_RETURN,
         ARK_RTFUNC_FAIL, ARK_TOO_MUCH_ACC, ARK_TOO_MUCH_WORK, ARK_TSTOP_RETURN, ARK_WARNING,
         ARK_WF, FIRST_CALL, FOUR, ONE, ONEPSM, RTFOUND, TWO,
     };
@@ -2400,10 +2400,9 @@ pub fn ARKodeEvolve(
         /* Looping point for step attempts */
         let mut dsm = ZERO;
         let mut kflag = ARK_SUCCESS;
-        let relax_fails = 0; /* arkRelax bookkeeping (module pending) */
+        let mut relax_fails: i32 = 0;
         let mut nflag = FIRST_CALL;
         let mut attempts = 0;
-        let _ = relax_fails;
         let mut ncf = 0;
         let mut nef = 0;
         let mut constrfails = 0;
@@ -2462,12 +2461,17 @@ pub fn ARKodeEvolve(
                 break;
             }
 
-            /* Perform relaxation (arkode_relaxation.c not yet ported;
-            relax_enabled can only be set by ARKodeSetRelaxFn, which is
-            also pending — fail loudly if ever reached) */
+            /* Perform relaxation:
+                 - computes relaxation parameter
+                 - on success, updates ycur, h, and dsm
+                 - on recoverable failure, updates eta and signals to retry step
+                 - on fatal error, returns negative error flag */
             if ark_mem.relax_enabled && (kflag == ARK_SUCCESS) {
-                kflag = ARK_RELAX_MEM_NULL;
-                break;
+                kflag = crate::arkode_relaxation::arkRelax(ark_mem, &mut relax_fails, &mut dsm);
+
+                if kflag < 0 {
+                    break;
+                }
             }
 
             /* perform constraint-handling (if selected, and if solver check

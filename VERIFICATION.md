@@ -167,10 +167,10 @@ error-path checks.
 | ark_brusselator_1D_mri | IDENTICAL (shipped ref; explicit-slow MRIStep over an implicit adaptive ARKStep inner (ARK324L2SA DIRK) with band ARKLS + user Jacobian, verified byte-exact on first run) |
 | ark_brusselator_fp | IDENTICAL (shipped ref; ImEx ARK pair + Anderson-accelerated fixed-point NLS + autonomous TPA reuse, verified byte-exact; the _fp_1 monitor-arg reference is byte-identical to the no-arg one and also passes) |
 | ark_brusselator_mri | IDENTICAL (shipped ref; the first MRIStep example — MIS_KW3 slow coupling over an explicit KNOTH_WOLKE_3_3 ARKStep inner via ARKodeCreateMRIStepInnerStepper, verified byte-exact on first run) |
-| ark_conserved_exp_entropy_ark | todo |
-| ark_conserved_exp_entropy_erk | todo |
+| ark_conserved_exp_entropy_ark | LOCAL-C x2 (1_0 explicit ERK relax + 1_1 DIRK relax with dense ARKLS+Newton, byte-identical to a fresh 7.7.0 C build; shipped refs stale at 1e-14 delta-e/Newton-iteration level; exercises arkStep_RelaxDeltaE stored-stage (implicit) and reconstructed-stage (explicit) paths + the arkRelax Newton solve) |
+| ark_conserved_exp_entropy_erk | LOCAL-C (1-arg relax-on run byte-identical to a fresh 7.7.0 C build; shipped ref stale; exercises erkStep_RelaxDeltaE + the FSAL-disabled-under-relaxation FullRHS path) |
 | ark_damped_harmonic_symplectic | todo |
-| ark_dissipated_exp_entropy | todo |
+| ark_dissipated_exp_entropy | LOCAL-C x2 (1_0 explicit + 1_1 DIRK relaxed runs byte-identical to a fresh 7.7.0 C build; shipped refs stale; scalar entropy-dissipation counterpart of the conserved problem) |
 | ark_harmonic_symplectic | todo |
 | ark_heat1D | todo |
 | ark_heat1D_adapt | todo |

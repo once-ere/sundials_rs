@@ -650,7 +650,13 @@ pub fn ARKodePrintAllStats(
         sunfprintf_long(outfile, fmt, SUNFALSE, "Root fn evals", root_mem.nge);
     }
 
-    /* (relaxation stats: module pending; relax_enabled cannot be set) */
+    /* Print relaxation stats */
+    if ark_mem.relax_enabled {
+        let retval = crate::arkode_relaxation::arkRelaxPrintAllStats(ark_mem, outfile, fmt);
+        if retval != ARK_SUCCESS {
+            return retval;
+        }
+    }
 
     /* Print stepper stats (if provided) */
     if let Some(step_printallstats) = ark_mem.step_printallstats {

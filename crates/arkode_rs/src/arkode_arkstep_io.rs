@@ -143,6 +143,25 @@ pub fn arkStep_GetNumRhsEvals(
 }
 
 /*---------------------------------------------------------------
+  arkStep_SetRelaxFn:
+
+  Sets up the relaxation module using ARKStep's utility routines.
+  ---------------------------------------------------------------*/
+pub fn arkStep_SetRelaxFn(
+    ark_mem: &mut ARKodeMem,
+    rfn: Option<crate::arkode_impl::ARKRelaxFn>,
+    rjac: Option<crate::arkode_impl::ARKRelaxJacFn>,
+) -> i32 {
+    crate::arkode_relaxation::arkRelaxCreate(
+        ark_mem,
+        rfn,
+        rjac,
+        Some(crate::arkode_arkstep::arkStep_RelaxDeltaE),
+        Some(crate::arkode_arkstep::arkStep_GetOrder),
+    )
+}
+
+/*---------------------------------------------------------------
   arkStep_SetUserData: passed through; the Rust steppers and the
   ARKLS interface read ark_mem.user_data directly (the C version
   re-points lmem/mass user data pointers).
