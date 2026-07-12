@@ -89,7 +89,7 @@ pub fn ARKStepCreate(
     ark_mem.step_printmem = Some(arkStep_PrintMem);
     ark_mem.step_setdefaults = Some(crate::arkode_arkstep_io::arkStep_SetDefaults);
     ark_mem.step_computestate = Some(arkStep_ComputeState);
-    ark_mem.step_setoptions = None; /* arkStep_SetOptions: CLI module pending */
+    ark_mem.step_setoptions = Some(crate::arkode_arkstep_io::arkStep_SetOptions);
     ark_mem.step_setrelaxfn = None; /* arkStep_SetRelaxFn: relaxation module pending */
     ark_mem.step_setorder = Some(crate::arkode_arkstep_io::arkStep_SetOrder);
     ark_mem.step_setnonlinearsolver =

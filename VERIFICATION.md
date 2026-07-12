@@ -147,7 +147,7 @@ example.
 |---|---|
 | ark_KrylovDemo_prec | IDENTICAL incl. _1/_2 nrmfactor arg variants (shipped refs; matrix-free SPGMR + user Precond/PSolve + DQ Jtimes + ARKStepReInit + workspace accounting, all four jpre/gstype runs byte-exact) |
 | ark_advection_diffusion_reaction_splitting | todo |
-| ark_analytic | IDENTICAL (shipped ref; first implicit ARKStep example — DIRK + Newton + dense ARKLS + SetLinear, verified byte-exact). Arg-variant refs (table_names override) pending the CLI module |
+| ark_analytic | IDENTICAL x2 (shipped refs; first implicit ARKStep example — DIRK + Newton + dense ARKLS + SetLinear; the scalar_tolerances/table_names CLI arg variant passes via ARKodeSetOptions + arkStep_SetOptions with an ESDIRK547L2SA table override) |
 | ark_analytic_lsrk (+_varjac, _domeigest, _domeigest arg variant, _ssprk) | LOCAL-C x5 (byte-identical to fresh 7.7.0 C build incl. all stats; shipped refs stale; covers RKL/RKC STS with user dom-eig fn, power-iteration SUNDomEigEstimator with warmup/max_iters options, and the SSP(9,3) path) |
 | ark_analytic_mels | todo |
 | ark_analytic_nonlin | IDENTICAL (shipped ref; the FIRST arkode example, verified byte-exact) |

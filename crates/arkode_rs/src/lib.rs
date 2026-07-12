@@ -114,6 +114,7 @@ pub mod arkode_mristep_impl;
 pub mod arkode_mristep;
 pub mod arkode_mristep_io;
 pub mod arkode_mristep_nls;
+pub mod arkode_cli;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
 pub use crate::arkode_impl::*;

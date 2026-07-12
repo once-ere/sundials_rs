@@ -406,3 +406,43 @@ pub fn erkStep_WriteParameters(ark_mem: &mut ARKodeMem, fp: &mut dyn std::io::Wr
     ark_mem.step_mem = Some(step_mem);
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  erkStep_SetOptions:
+
+  Provides command-line control over ERKStep-specific "set"
+  routines (arkode_erkstep_io.c).
+  ---------------------------------------------------------------*/
+pub fn erkStep_SetOptions(
+    ark_mem: &mut ARKodeMem,
+    argidx: &mut usize,
+    argv: &[String],
+    offset: usize,
+    arg_used: &mut bool,
+) -> i32 {
+    use crate::sundials_cli::{sunCheckAndSetCharArgs, sunKeyCharPair};
+
+    /* Set lists of keys, and the corresponding set routines */
+    let char_pairs: [sunKeyCharPair<ARKodeMem>; 1] = [sunKeyCharPair {
+        key: "table_name",
+        set: ERKStepSetTableName,
+    }];
+
+    /* check all "char" keys */
+    let mut j: usize = 0;
+    let retval =
+        sunCheckAndSetCharArgs(ark_mem, argidx, argv, offset, &char_pairs, arg_used, &mut j);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "erkStep_SetOptions",
+            file!(),
+            &format!("error setting key: {}", char_pairs[j].key),
+        );
+        return retval;
+    }
+
+    ARK_SUCCESS
+}

@@ -192,6 +192,7 @@ pub(crate) fn lsrkStep_Create_Commons(
     ark_mem.step = Some(lsrkStep_TakeStepRKC);
     ark_mem.step_printallstats = Some(lsrkStep_PrintAllStats);
     ark_mem.step_writeparameters = Some(lsrkStep_WriteParameters);
+    ark_mem.step_setoptions = Some(crate::arkode_lsrkstep_io::lsrkStep_SetOptions);
     ark_mem.step_free = Some(lsrkStep_Free);
     ark_mem.step_setdefaults = Some(lsrkStep_SetDefaults);
     ark_mem.step_getnumrhsevals = Some(lsrkStep_GetNumRhsEvals);

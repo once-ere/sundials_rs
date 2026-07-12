@@ -733,7 +733,7 @@ ark_io_dispatch_implicit!(
     step_setdeduceimplicitrhs,
     deduce: bool
 );
-ark_io_dispatch_implicit!(ARKodeSetPredictorMethod, step_setpredictormethod, method: i32);
+/* ARKodeSetPredictorMethod: full version below (adds C's ARK_INTERP_NONE check) */
 ark_io_dispatch_implicit!(ARKodeSetMaxNonlinIters, step_setmaxnonliniters, maxcor: i32);
 ark_io_dispatch_implicit!(ARKodeSetNonlinConvCoef, step_setnonlinconvcoef, nlscoef: f64);
 ark_io_dispatch_implicit!(ARKodeSetNonlinCRDown, step_setnonlincrdown, crdown: f64);
@@ -1227,5 +1227,690 @@ pub fn ARKodeResetAccumulatedError(ark_mem: &mut ARKodeMem) -> i32 {
     ark_mem.AccumErrorStart = ark_mem.tn;
     ark_mem.AccumError = ZERO;
 
+    ARK_SUCCESS
+}
+
+/*===============================================================
+  Optional input functions required by the ARKODE CLI module
+  (arkode_io.c PART VI)
+  ===============================================================*/
+
+/*---------------------------------------------------------------
+  ARKodeSetOrder: Specifies the method order
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetOrder(ark_mem: &mut ARKodeMem, ord: i32) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED};
+
+    /* Call stepper routine (if provided) */
+    if let Some(step_setorder) = ark_mem.step_setorder {
+        step_setorder(ark_mem, ord)
+    } else {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetOrder",
+            file!(),
+            "time-stepping module does not support this function",
+        );
+        ARK_STEPPER_UNSUPPORTED
+    }
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetPredictorMethod: implicit-solution predictor method.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetPredictorMethod(ark_mem: &mut ARKodeMem, pred_method: i32) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_ILL_INPUT, ARK_INTERP_NONE,
+        ARK_STEPPER_UNSUPPORTED};
+
+    /* Guard against use for time steppers that do not need an algebraic solver */
+    if !ark_mem.step_supports_implicit {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetPredictorMethod",
+            file!(),
+            "time-stepping module does not require an algebraic solver",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Higher-order predictors require interpolation */
+    if ark_mem.interp_type == ARK_INTERP_NONE && pred_method != 0 {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSetPredictorMethod",
+            file!(),
+            "Non-trival predictors require an interpolation module",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* Call stepper routine (if provided) */
+    if let Some(step_setpredictormethod) = ark_mem.step_setpredictormethod {
+        step_setpredictormethod(ark_mem, pred_method)
+    } else {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetPredictorMethod",
+            file!(),
+            "time-stepping module does not support this function",
+        );
+        ARK_STEPPER_UNSUPPORTED
+    }
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxHnilWarns: max warnings of t+h==t.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxHnilWarns(ark_mem: &mut ARKodeMem, mxhnil: i32) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxHnilWarns",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Passing mxhnil=0 sets the default, otherwise use input. */
+    if mxhnil == 0 {
+        ark_mem.mxhnil = 10;
+    } else {
+        ark_mem.mxhnil = mxhnil;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetInterpolateStopTime: interpolate at tstop.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetInterpolateStopTime(ark_mem: &mut ARKodeMem, interp: bool) -> i32 {
+    ark_mem.tstopinterp = interp;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxNumConstrFails: max constraint failures per step.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxNumConstrFails(ark_mem: &mut ARKodeMem, maxfails: i32) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, MAXCONSTRFAILS};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxNumConstrFails",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Passing maxfails = 0 sets the default, otherwise set to input */
+    if maxfails <= 0 {
+        ark_mem.maxconstrfails = MAXCONSTRFAILS;
+    } else {
+        ark_mem.maxconstrfails = maxfails;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetAdaptivityAdjustment: controller order adjustment.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetAdaptivityAdjustment(ark_mem: &mut ARKodeMem, adjust: i32) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetAdaptivityAdjustment",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* store requested adjustment */
+    ark_mem.hadapt_mem.as_mut().unwrap().adjust = adjust;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetSmallNumEFails: num error fails before ETAMXF enforced.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetSmallNumEFails(ark_mem: &mut ARKodeMem, small_nef: i32) -> i32 {
+    use crate::arkode_adapt_impl::SMALL_NEF;
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetSmallNumEFails",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* if argument legal set it, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if small_nef <= 0 {
+        hadapt_mem.small_nef = SMALL_NEF;
+    } else {
+        hadapt_mem.small_nef = small_nef;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxConvFails: max convergence failures per step.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxConvFails(ark_mem: &mut ARKodeMem, maxncf: i32) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, MAXNCF};
+
+    /* Guard against use for time steppers that do not need an algebraic solver */
+    if !ark_mem.step_supports_implicit {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxConvFails",
+            file!(),
+            "time-stepping module does not require an algebraic solver",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* argument <= 0 sets default, otherwise set input */
+    if maxncf <= 0 {
+        ark_mem.maxncf = MAXNCF;
+    } else {
+        ark_mem.maxncf = maxncf;
+    }
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMinStep: minimum absolute step size.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMinStep(ark_mem: &mut ARKodeMem, hmin: f64) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_ILL_INPUT, ARK_STEPPER_UNSUPPORTED,
+        MSG_ARK_BAD_HMIN_HMAX, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMinStep",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Passing a value <= 0 sets hmin = 0 */
+    if hmin <= ZERO {
+        ark_mem.hmin = ZERO;
+        return ARK_SUCCESS;
+    }
+
+    /* check that hmin and hmax are agreeable */
+    if hmin * ark_mem.hmax_inv > ONE {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSetMinStep",
+            file!(),
+            MSG_ARK_BAD_HMIN_HMAX,
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* set the value */
+    ark_mem.hmin = hmin;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxStep: maximum absolute step size.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxStep(ark_mem: &mut ARKodeMem, hmax: f64) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_ILL_INPUT, ARK_STEPPER_UNSUPPORTED,
+        MSG_ARK_BAD_HMIN_HMAX, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxStep",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Passing a value <= 0 sets hmax = infinity */
+    if hmax <= ZERO {
+        ark_mem.hmax_inv = ZERO;
+        return ARK_SUCCESS;
+    }
+
+    /* check that hmax and hmin are agreeable */
+    let hmax_inv = ONE / hmax;
+    if hmax_inv * ark_mem.hmin > ONE {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSetMaxStep",
+            file!(),
+            MSG_ARK_BAD_HMIN_HMAX,
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* set the value */
+    ark_mem.hmax_inv = hmax_inv;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetCFLFraction: explicit stability safety factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetCFLFraction(ark_mem: &mut ARKodeMem, cfl_frac: f64) -> i32 {
+    use crate::arkode_adapt_impl::CFLFAC;
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetCFLFraction",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* set positive-valued parameters, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if cfl_frac <= ZERO {
+        hadapt_mem.cfl = CFLFAC;
+    } else {
+        hadapt_mem.cfl = cfl_frac;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetSafetyFactor: step adaptivity safety factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetSafetyFactor(ark_mem: &mut ARKodeMem, safety: f64) -> i32 {
+    use crate::arkode_adapt_impl::SAFETY;
+    use crate::arkode_impl::{arkProcessError, ARK_ILL_INPUT, ARK_STEPPER_UNSUPPORTED, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetSafetyFactor",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* check for allowable parameters */
+    if safety > ONE {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSetSafetyFactor",
+            file!(),
+            "Illegal safety factor",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* set positive-valued parameters, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if safety <= ZERO {
+        hadapt_mem.safety = SAFETY;
+    } else {
+        hadapt_mem.safety = safety;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetErrorBias: temporal error bias factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetErrorBias(ark_mem: &mut ARKodeMem, bias: f64) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_CONTROLLER_ERR, ARK_MEM_NULL,
+        ARK_STEPPER_UNSUPPORTED, ONE};
+    use crate::sundials_adaptcontroller::SUNAdaptController_SetErrorBias;
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetErrorBias",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Return an error if there is not a current SUNAdaptController */
+    if ark_mem.hadapt_mem.as_ref().unwrap().hcontroller.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "ARKodeSetErrorBias",
+            file!(),
+            "SUNAdaptController NULL -- must be set before setting the error bias",
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* set allowed value, otherwise set default */
+    let hcontroller = ark_mem
+        .hadapt_mem
+        .as_mut()
+        .unwrap()
+        .hcontroller
+        .as_mut()
+        .unwrap();
+    let retval = if bias < ONE {
+        SUNAdaptController_SetErrorBias(hcontroller, -ONE)
+    } else {
+        SUNAdaptController_SetErrorBias(hcontroller, bias)
+    };
+    if retval != crate::sundials_errors::SUN_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_CONTROLLER_ERR,
+            line!(),
+            "ARKodeSetErrorBias",
+            file!(),
+            "SUNAdaptController_SetErrorBias failure",
+        );
+        return ARK_CONTROLLER_ERR;
+    }
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxGrowth: max step growth factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxGrowth(ark_mem: &mut ARKodeMem, mx_growth: f64) -> i32 {
+    use crate::arkode_adapt_impl::GROWTH;
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxGrowth",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* set allowed value, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if mx_growth <= ONE {
+        hadapt_mem.growth = GROWTH;
+    } else {
+        hadapt_mem.growth = mx_growth;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMinReduction: min step reduction factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMinReduction(ark_mem: &mut ARKodeMem, eta_min: f64) -> i32 {
+    use crate::arkode_adapt_impl::ETAMIN;
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMinReduction",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* set allowed value, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if eta_min >= ONE || eta_min <= ZERO {
+        hadapt_mem.etamin = ETAMIN;
+    } else {
+        hadapt_mem.etamin = eta_min;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxFirstGrowth: max first-step growth factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxFirstGrowth(ark_mem: &mut ARKodeMem, etamx1: f64) -> i32 {
+    use crate::arkode_adapt_impl::ETAMX1;
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxFirstGrowth",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* if argument legal set it, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if etamx1 <= ONE {
+        hadapt_mem.etamx1 = ETAMX1;
+    } else {
+        hadapt_mem.etamx1 = etamx1;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxEFailGrowth: max error-fail growth factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxEFailGrowth(ark_mem: &mut ARKodeMem, etamxf: f64) -> i32 {
+    use crate::arkode_adapt_impl::ETAMXF;
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxEFailGrowth",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* if argument legal set it, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if etamxf <= ZERO || etamxf > ONE {
+        hadapt_mem.etamxf = ETAMXF;
+    } else {
+        hadapt_mem.etamxf = etamxf;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxCFailGrowth: max convergence-fail growth factor.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxCFailGrowth(ark_mem: &mut ARKodeMem, etacf: f64) -> i32 {
+    use crate::arkode_adapt_impl::ETACF;
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxCFailGrowth",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* if argument legal set it, otherwise set default */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if etacf <= ZERO || etacf > ONE {
+        hadapt_mem.etacf = ETACF;
+    } else {
+        hadapt_mem.etacf = etacf;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetFixedStepBounds: no-change step growth interval.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetFixedStepBounds(ark_mem: &mut ARKodeMem, lb: f64, ub: f64) -> i32 {
+    use crate::arkode_adapt_impl::{HFIXED_LB, HFIXED_UB};
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED, ONE};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetFixedStepBounds",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* set allowable interval, otherwise set defaults */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    if lb <= ONE && ub >= ONE {
+        hadapt_mem.lbound = lb;
+        hadapt_mem.ubound = ub;
+    } else {
+        hadapt_mem.lbound = HFIXED_LB;
+        hadapt_mem.ubound = HFIXED_UB;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeClearStopTime: disables the stop time.
+  ---------------------------------------------------------------*/
+pub fn ARKodeClearStopTime(ark_mem: &mut ARKodeMem) -> i32 {
+    ark_mem.tstopset = false;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetNoInactiveRootWarn: disables the inactive-root warning.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetNoInactiveRootWarn(ark_mem: &mut ARKodeMem) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_MEM_NULL, MSG_ARK_NO_ROOT};
+
+    if ark_mem.root_mem.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "ARKodeSetNoInactiveRootWarn",
+            file!(),
+            MSG_ARK_NO_ROOT,
+        );
+        return ARK_MEM_NULL;
+    }
+    ark_mem.root_mem.as_mut().unwrap().mxgnull = 0;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetAccumulatedErrorType: enables accumulated-error
+  estimation.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetAccumulatedErrorType(
+    ark_mem: &mut ARKodeMem,
+    accum_type: crate::arkode_impl::ARKAccumError,
+) -> i32 {
+    let retval = ARKodeResetAccumulatedError(ark_mem);
+    if retval != ARK_SUCCESS {
+        return retval;
+    }
+    ark_mem.AccumErrorType = accum_type;
     ARK_SUCCESS
 }

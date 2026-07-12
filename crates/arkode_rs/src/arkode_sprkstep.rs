@@ -74,6 +74,7 @@ pub fn SPRKStepCreate(
     ark_mem.step = Some(sprkStep_TakeStep);
     ark_mem.step_printallstats = Some(sprkStep_PrintAllStats);
     ark_mem.step_writeparameters = Some(sprkStep_WriteParameters);
+    ark_mem.step_setoptions = Some(crate::arkode_sprkstep_io::sprkStep_SetOptions);
     ark_mem.step_setusecompensatedsums = Some(sprkStep_SetUseCompensatedSums);
     ark_mem.step_free = Some(sprkStep_Free);
     ark_mem.step_setdefaults = Some(sprkStep_SetDefaults);

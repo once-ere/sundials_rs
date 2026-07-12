@@ -127,7 +127,7 @@ pub fn ERKStepCreate(
     ark_mem.step_resize = Some(erkStep_Resize);
     ark_mem.step_free = Some(erkStep_Free);
     ark_mem.step_printmem = Some(erkStep_PrintMem);
-    ark_mem.step_setoptions = None; /* erkStep_SetOptions: CLI module pending */
+    ark_mem.step_setoptions = Some(crate::arkode_erkstep_io::erkStep_SetOptions);
     ark_mem.step_setdefaults = Some(crate::arkode_erkstep_io::erkStep_SetDefaults);
     ark_mem.step_setrelaxfn = None; /* erkStep_SetRelaxFn: relaxation module pending */
     ark_mem.step_setorder = Some(crate::arkode_erkstep_io::erkStep_SetOrder);

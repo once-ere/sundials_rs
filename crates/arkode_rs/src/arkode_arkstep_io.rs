@@ -1502,3 +1502,89 @@ pub fn ARKStepSetTableName(ark_mem: &mut ARKodeMem, itable: &str, etable: &str) 
         crate::arkode_butcher_erk::arkButcherTableERKNameToID(etable),
     )
 }
+
+/*---------------------------------------------------------------
+  arkStep_SetOptions:
+
+  Provides command-line control over ARKStep-specific "set"
+  routines (arkode_arkstep_io.c).
+  ---------------------------------------------------------------*/
+pub fn arkStep_SetOptions(
+    ark_mem: &mut ARKodeMem,
+    argidx: &mut usize,
+    argv: &[String],
+    offset: usize,
+    arg_used: &mut bool,
+) -> i32 {
+    use crate::sundials_cli::{
+        sunCheckAndSetActionArgs, sunCheckAndSetTwoCharArgs, sunKeyActionPair, sunKeyTwoCharPair,
+    };
+
+    /* Set lists of keys, and the corresponding set routines */
+    let twochar_pairs: [sunKeyTwoCharPair<ARKodeMem>; 1] = [sunKeyTwoCharPair {
+        key: "table_names",
+        set: ARKStepSetTableName,
+    }];
+
+    let action_pairs: [sunKeyActionPair<ARKodeMem>; 3] = [
+        sunKeyActionPair { key: "explicit", set: ARKStepSetExplicit },
+        sunKeyActionPair { key: "implicit", set: ARKStepSetImplicit },
+        sunKeyActionPair { key: "imex", set: ARKStepSetImEx },
+    ];
+
+    /* check all "twochar" keys */
+    let mut j: usize = 0;
+    let retval = sunCheckAndSetTwoCharArgs(
+        ark_mem,
+        argidx,
+        argv,
+        offset,
+        &twochar_pairs,
+        arg_used,
+        &mut j,
+    );
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "arkStep_SetOptions",
+            file!(),
+            &format!(
+                "error setting command-line argument: {}",
+                twochar_pairs[j].key
+            ),
+        );
+        return retval;
+    }
+    if *arg_used {
+        return ARK_SUCCESS;
+    }
+
+    /* check all action keys */
+    let retval = sunCheckAndSetActionArgs(
+        ark_mem,
+        argidx,
+        argv,
+        offset,
+        &action_pairs,
+        arg_used,
+        &mut j,
+    );
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "arkStep_SetOptions",
+            file!(),
+            &format!(
+                "error setting command-line argument: {}",
+                action_pairs[j].key
+            ),
+        );
+        return retval;
+    }
+
+    ARK_SUCCESS
+}

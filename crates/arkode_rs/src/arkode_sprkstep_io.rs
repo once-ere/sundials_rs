@@ -296,3 +296,46 @@ pub fn sprkStep_SetUseCompensatedSums(ark_mem: &mut ARKodeMem, onoff: bool) -> i
     ark_mem.step_mem = Some(step_mem);
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  sprkStep_SetOptions:
+
+  Provides command-line control over SPRKStep-specific "set"
+  routines (arkode_sprkstep_io.c).
+  ---------------------------------------------------------------*/
+pub fn sprkStep_SetOptions(
+    ark_mem: &mut ARKodeMem,
+    argidx: &mut usize,
+    argv: &[String],
+    offset: usize,
+    arg_used: &mut bool,
+) -> i32 {
+    use crate::sundials_cli::{sunCheckAndSetCharArgs, sunKeyCharPair};
+
+    /* Set lists of keys, and the corresponding set routines */
+    let char_pairs: [sunKeyCharPair<ARKodeMem>; 1] = [sunKeyCharPair {
+        key: "method_name",
+        set: SPRKStepSetMethodName,
+    }];
+
+    /* check all "char" keys */
+    let mut j: usize = 0;
+    let retval =
+        sunCheckAndSetCharArgs(ark_mem, argidx, argv, offset, &char_pairs, arg_used, &mut j);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "sprkStep_SetOptions",
+            file!(),
+            &format!("error setting key: {}", char_pairs[j].key),
+        );
+        return retval;
+    }
+    if *arg_used {
+        return ARK_SUCCESS;
+    }
+
+    ARK_SUCCESS
+}

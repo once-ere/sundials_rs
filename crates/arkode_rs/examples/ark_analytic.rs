@@ -17,13 +17,10 @@
  * user-supplied Jacobian routine.
  * Output is printed every 1.0 units of time (10 total).
  * Run statistics (optional outputs) are printed at the end.
- *
- * (C's ARKodeSetOptions(arkode_mem, NULL, NULL, argc, argv) call is
- * omitted: the CLI module is pending and the reference run passes
- * no arguments, so it is a no-op there.)
  * -----------------------------------------------------------------*/
 
 use arkode_rs::arkode::{ARKodeEvolve, ARKodeFree, ARKodeSStolerances};
+use arkode_rs::arkode_cli::ARKodeSetOptions;
 use arkode_rs::arkode_arkstep::ARKStepCreate;
 use arkode_rs::arkode_io::{
     ARKodeGetNumErrTestFails, ARKodeGetNumLinSolvSetups, ARKodeGetNumNonlinSolvConvFails,
@@ -138,6 +135,11 @@ fn main() {
     /* Specify linearly implicit RHS, with non-time-dependent Jacobian */
     let flag = ARKodeSetLinear(&mut arkode_mem, 0);
     assert!(flag >= 0, "ARKodeSetLinear failed with flag = {}", flag);
+
+    /* Override any current settings with command-line options */
+    let args: Vec<String> = std::env::args().collect();
+    let flag = ARKodeSetOptions(&mut arkode_mem, None, None, &args);
+    assert!(flag >= 0, "ARKodeSetOptions failed with flag = {}", flag);
 
     /* Output current ARKODE options */
     let mut stdout = std::io::stdout();

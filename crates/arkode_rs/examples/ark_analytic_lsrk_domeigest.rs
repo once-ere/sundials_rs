@@ -14,9 +14,8 @@
  *   (the DEE moves into the integrator).  The observable state at the
  *   first Estimate call is identical.
  * - C also calls ARKodeSetOptions(arkode_mem, NULL, ...): its option
- *   prefix is "arkode." and the reference runs pass no such keys (the
- *   "arkid."-prefixed argument is skipped by C as well), so the call
- *   has no effect and the ARKODE CLI module remains pending.
+ *   prefix is "arkode.", so the "arkid."-prefixed argument of the
+ *   reference variant is skipped (by C as well).
  *
  * Example problem: the following is a simple example problem with
  * analytical solution,
@@ -40,6 +39,7 @@ use arkode_rs::arkode_lsrkstep_io::{
     LSRKStepSetMaxNumStages, LSRKStepSetNumDomEigEstInitPreprocessIters,
     LSRKStepSetNumDomEigEstPreprocessIters, LSRKStepSetSTSMethodByName,
 };
+use arkode_rs::arkode_cli::ARKodeSetOptions;
 use arkode_rs::sundials_domeigestimator::SUNDomEigEstimator_SetOptions;
 use arkode_rs::sundomeigest_power::SUNDomEigEstimator_Power;
 use arkode_rs::sundials_utils::{fmt_e, fmt_f, fmt_g};
@@ -194,6 +194,10 @@ fn main() {
     /* Specify the Runge--Kutta--Chebyshev LSRK method by name */
     let flag = LSRKStepSetSTSMethodByName(&mut arkode_mem, "ARKODE_LSRK_RKC_2");
     assert!(flag >= 0, "LSRKStepSetSTSMethodByName failed with flag = {}", flag);
+
+    /* Override any current settings with command-line options */
+    let flag = ARKodeSetOptions(&mut arkode_mem, None, None, &argv);
+    assert!(flag >= 0, "ARKodeSetOptions failed with flag = {}", flag);
 
     /* Open output stream for results, output comment line */
     let mut ufid = std::fs::File::create("solution.txt").unwrap();

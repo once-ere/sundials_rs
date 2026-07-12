@@ -876,3 +876,123 @@ pub fn lsrkStep_GetEstLocalErrors(ark_mem: &mut ARKodeMem, ele: &mut NVector) ->
     N_VScale(ONE, &ark_mem.tempv1, ele);
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  lsrkStep_SetOptions:
+
+  Provides command-line control over LSRKStep-specific "set"
+  routines (arkode_lsrkstep_io.c).
+  ---------------------------------------------------------------*/
+pub fn lsrkStep_SetOptions(
+    ark_mem: &mut ARKodeMem,
+    argidx: &mut usize,
+    argv: &[String],
+    offset: usize,
+    arg_used: &mut bool,
+) -> i32 {
+    use crate::sundials_cli::{
+        sunCheckAndSetCharArgs, sunCheckAndSetIntArgs, sunCheckAndSetLongArgs,
+        sunCheckAndSetRealArgs, sunKeyCharPair, sunKeyIntPair, sunKeyLongPair, sunKeyRealPair,
+    };
+
+    /* Set lists of keys, and the corresponding set routines */
+    let char_pairs: [sunKeyCharPair<ARKodeMem>; 2] = [
+        sunKeyCharPair { key: "sts_method_name", set: LSRKStepSetSTSMethodByName },
+        sunKeyCharPair { key: "ssp_method_name", set: LSRKStepSetSSPMethodByName },
+    ];
+
+    let long_pairs: [sunKeyLongPair<ARKodeMem>; 1] = [sunKeyLongPair {
+        key: "dom_eig_frequency",
+        set: LSRKStepSetDomEigFrequency,
+    }];
+
+    let int_pairs: [sunKeyIntPair<ARKodeMem>; 4] = [
+        sunKeyIntPair { key: "max_num_stages", set: LSRKStepSetMaxNumStages },
+        sunKeyIntPair { key: "num_ssp_stages", set: LSRKStepSetNumSSPStages },
+        sunKeyIntPair {
+            key: "num_dom_eig_est_init_preprocess_iters",
+            set: LSRKStepSetNumDomEigEstInitPreprocessIters,
+        },
+        sunKeyIntPair {
+            key: "num_dom_eig_est_preprocess_iters",
+            set: LSRKStepSetNumDomEigEstPreprocessIters,
+        },
+    ];
+
+    let real_pairs: [sunKeyRealPair<ARKodeMem>; 1] = [sunKeyRealPair {
+        key: "dom_eig_safety_factor",
+        set: LSRKStepSetDomEigSafetyFactor,
+    }];
+
+    /* check all "char" keys */
+    let mut j: usize = 0;
+    let retval =
+        sunCheckAndSetCharArgs(ark_mem, argidx, argv, offset, &char_pairs, arg_used, &mut j);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "lsrkStep_SetOptions",
+            file!(),
+            &format!("error setting key: {}", char_pairs[j].key),
+        );
+        return retval;
+    }
+    if *arg_used {
+        return ARK_SUCCESS;
+    }
+
+    /* check all "long int" keys */
+    let retval =
+        sunCheckAndSetLongArgs(ark_mem, argidx, argv, offset, &long_pairs, arg_used, &mut j);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "lsrkStep_SetOptions",
+            file!(),
+            &format!("error setting key: {}", long_pairs[j].key),
+        );
+        return retval;
+    }
+    if *arg_used {
+        return ARK_SUCCESS;
+    }
+
+    /* check all "int" keys */
+    let retval =
+        sunCheckAndSetIntArgs(ark_mem, argidx, argv, offset, &int_pairs, arg_used, &mut j);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "lsrkStep_SetOptions",
+            file!(),
+            &format!("error setting key: {}", int_pairs[j].key),
+        );
+        return retval;
+    }
+    if *arg_used {
+        return ARK_SUCCESS;
+    }
+
+    /* check all "real" keys */
+    let retval =
+        sunCheckAndSetRealArgs(ark_mem, argidx, argv, offset, &real_pairs, arg_used, &mut j);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "lsrkStep_SetOptions",
+            file!(),
+            &format!("error setting key: {}", real_pairs[j].key),
+        );
+        return retval;
+    }
+
+    ARK_SUCCESS
+}
