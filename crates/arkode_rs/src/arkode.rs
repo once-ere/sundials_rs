@@ -3110,6 +3110,264 @@ pub fn ARKodeWFtolerances(ark_mem: &mut ARKodeMem, efun: crate::arkode_impl::ARK
 }
 
 /*---------------------------------------------------------------
+  ARKodeResStolerance:
+
+  This routine provides a scalar absolute residual tolerance.
+  ---------------------------------------------------------------*/
+pub fn ARKodeResStolerance(ark_mem: &mut ARKodeMem, rabstol: f64) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ILL_INPUT, ARK_MEM_FAIL, ARK_NO_MALLOC, ARK_SS, ARK_STEPPER_UNSUPPORTED,
+        MSG_ARK_ARKMEM_FAIL, MSG_ARK_BAD_RABSTOL, MSG_ARK_NO_MALLOC,
+    };
+
+    /* Guard against use for time steppers that do not support mass matrices */
+    if !ark_mem.step_supports_massmatrix {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeResStolerance", file!(),
+            "time-stepping module does not support non-identity mass matrices");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Check inputs */
+    if !ark_mem.MallocDone {
+        arkProcessError(Some(ark_mem), ARK_NO_MALLOC, line!(),
+            "ARKodeResStolerance", file!(), MSG_ARK_NO_MALLOC);
+        return ARK_NO_MALLOC;
+    }
+    if rabstol < ZERO {
+        arkProcessError(Some(ark_mem), ARK_ILL_INPUT, line!(),
+            "ARKodeResStolerance", file!(), MSG_ARK_BAD_RABSTOL);
+        return ARK_ILL_INPUT;
+    }
+
+    /* Set flag indicating whether rabstol == 0 */
+    ark_mem.Ratolmin0 = rabstol == ZERO;
+
+    /* Allocate space for rwt if necessary */
+    if ark_mem.rwt_is_ewt {
+        let tmpl_len = ark_mem.ewt.data.len();
+        let mut rwt = NVector::new(0);
+        if !arkAllocVec(ark_mem, tmpl_len, &mut rwt) {
+            arkProcessError(Some(ark_mem), ARK_MEM_FAIL, line!(),
+                "ARKodeResStolerance", file!(), MSG_ARK_ARKMEM_FAIL);
+            return ARK_ILL_INPUT;
+        }
+        ark_mem.rwt = rwt;
+        ark_mem.rwt_is_ewt = false;
+    }
+
+    /* Copy tolerances into memory */
+    ark_mem.SRabstol = rabstol;
+    ark_mem.ritol = ARK_SS;
+
+    /* enforce use of arkRwtSet (internal dispatch when user_rfun false) */
+    ark_mem.user_rfun = false;
+    ark_mem.rfun = None;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeResVtolerance:
+
+  This routine provides a vector absolute residual tolerance.
+  ---------------------------------------------------------------*/
+pub fn ARKodeResVtolerance(ark_mem: &mut ARKodeMem, rabstol: &NVector) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ILL_INPUT, ARK_MEM_FAIL, ARK_NO_MALLOC, ARK_SV, ARK_STEPPER_UNSUPPORTED,
+        MSG_ARK_ARKMEM_FAIL, MSG_ARK_BAD_RABSTOL, MSG_ARK_NO_MALLOC,
+    };
+    use crate::nvector_serial::{N_VMin, N_VScale};
+
+    /* Guard against use for time steppers that do not support mass matrices */
+    if !ark_mem.step_supports_massmatrix {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeResVtolerance", file!(),
+            "time-stepping module does not support non-identity mass matrices");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Check inputs */
+    if !ark_mem.MallocDone {
+        arkProcessError(Some(ark_mem), ARK_NO_MALLOC, line!(),
+            "ARKodeResVtolerance", file!(), MSG_ARK_NO_MALLOC);
+        return ARK_NO_MALLOC;
+    }
+    let rabstolmin = N_VMin(rabstol);
+    if rabstolmin < ZERO {
+        arkProcessError(Some(ark_mem), ARK_ILL_INPUT, line!(),
+            "ARKodeResVtolerance", file!(), MSG_ARK_BAD_RABSTOL);
+        return ARK_ILL_INPUT;
+    }
+
+    /* Set flag indicating whether min(abstol) == 0 */
+    ark_mem.Ratolmin0 = rabstolmin == ZERO;
+
+    /* Allocate space for rwt if necessary */
+    if ark_mem.rwt_is_ewt {
+        let tmpl_len = ark_mem.ewt.data.len();
+        let mut rwt = NVector::new(0);
+        if !arkAllocVec(ark_mem, tmpl_len, &mut rwt) {
+            arkProcessError(Some(ark_mem), ARK_MEM_FAIL, line!(),
+                "ARKodeResVtolerance", file!(), MSG_ARK_ARKMEM_FAIL);
+            return ARK_ILL_INPUT;
+        }
+        ark_mem.rwt = rwt;
+        ark_mem.rwt_is_ewt = false;
+    }
+
+    /* Copy tolerances into memory */
+    if !ark_mem.VRabstolMallocDone {
+        let tmpl_len = ark_mem.rwt.data.len();
+        let mut v = ark_mem.VRabstol.take().unwrap_or_else(|| NVector::new(0));
+        if !arkAllocVec(ark_mem, tmpl_len, &mut v) {
+            arkProcessError(Some(ark_mem), ARK_MEM_FAIL, line!(),
+                "ARKodeResVtolerance", file!(), MSG_ARK_ARKMEM_FAIL);
+            return ARK_ILL_INPUT;
+        }
+        ark_mem.VRabstol = Some(v);
+        ark_mem.VRabstolMallocDone = true;
+    }
+    N_VScale(ONE, rabstol, ark_mem.VRabstol.as_mut().unwrap());
+    ark_mem.ritol = ARK_SV;
+
+    /* enforce use of arkRwtSet (internal dispatch when user_rfun false) */
+    ark_mem.user_rfun = false;
+    ark_mem.rfun = None;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeResFtolerance:
+
+  This routine provides a user-supplied residual weight function.
+  ---------------------------------------------------------------*/
+pub fn ARKodeResFtolerance(ark_mem: &mut ARKodeMem, rfun: crate::arkode_impl::ARKRwtFn) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ILL_INPUT, ARK_MEM_FAIL, ARK_NO_MALLOC, ARK_STEPPER_UNSUPPORTED, ARK_WF,
+        MSG_ARK_ARKMEM_FAIL, MSG_ARK_NO_MALLOC,
+    };
+
+    /* Guard against use for time steppers that do not support mass matrices */
+    if !ark_mem.step_supports_massmatrix {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeResFtolerance", file!(),
+            "time-stepping module does not support non-identity mass matrices");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    if !ark_mem.MallocDone {
+        arkProcessError(Some(ark_mem), ARK_NO_MALLOC, line!(),
+            "ARKodeResFtolerance", file!(), MSG_ARK_NO_MALLOC);
+        return ARK_NO_MALLOC;
+    }
+
+    /* Allocate space for rwt if necessary */
+    if ark_mem.rwt_is_ewt {
+        let tmpl_len = ark_mem.ewt.data.len();
+        let mut rwt = NVector::new(0);
+        if !arkAllocVec(ark_mem, tmpl_len, &mut rwt) {
+            arkProcessError(Some(ark_mem), ARK_MEM_FAIL, line!(),
+                "ARKodeResFtolerance", file!(), MSG_ARK_ARKMEM_FAIL);
+            return ARK_ILL_INPUT;
+        }
+        ark_mem.rwt = rwt;
+        ark_mem.rwt_is_ewt = false;
+    }
+
+    /* Copy tolerance data into memory (C: r_data = user_data; the user
+    rfun receives ark_mem.user_data through the dispatch helper) */
+    ark_mem.ritol = ARK_WF;
+    ark_mem.user_rfun = true;
+    ark_mem.rfun = Some(rfun);
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodePrintMem:
+
+  This routine outputs the ark_mem structure to a specified file
+  pointer.
+  ---------------------------------------------------------------*/
+pub fn ARKodePrintMem(ark_mem: &mut ARKodeMem, outfile: &mut dyn std::io::Write) {
+    /* output general values (C SUN_FORMAT_G = "%.15g" for doubles) */
+    let _ = writeln!(outfile, "itol = {}", ark_mem.itol);
+    let _ = writeln!(outfile, "ritol = {}", ark_mem.ritol);
+    let _ = writeln!(outfile, "mxhnil = {}", ark_mem.mxhnil);
+    let _ = writeln!(outfile, "mxstep = {}", ark_mem.mxstep);
+    let _ = writeln!(outfile, "lrw1 = {}", ark_mem.lrw1);
+    let _ = writeln!(outfile, "liw1 = {}", ark_mem.liw1);
+    let _ = writeln!(outfile, "lrw = {}", ark_mem.lrw);
+    let _ = writeln!(outfile, "liw = {}", ark_mem.liw);
+    let _ = writeln!(outfile, "user_efun = {}", ark_mem.user_efun as i32);
+    let _ = writeln!(outfile, "tstopset = {}", ark_mem.tstopset as i32);
+    let _ = writeln!(outfile, "tstopinterp = {}", ark_mem.tstopinterp as i32);
+    let _ = writeln!(outfile, "tstop = {}", fmt_g(ark_mem.tstop, 0, 15));
+    let _ = writeln!(outfile, "VabstolMallocDone = {}", ark_mem.VabstolMallocDone as i32);
+    let _ = writeln!(outfile, "MallocDone = {}", ark_mem.MallocDone as i32);
+    let _ = writeln!(outfile, "initsetup = {}", ark_mem.initsetup as i32);
+    let _ = writeln!(outfile, "init_type = {}", ark_mem.init_type);
+    let _ = writeln!(outfile, "firststage = {}", ark_mem.firststage as i32);
+    let _ = writeln!(outfile, "uround = {}", fmt_g(ark_mem.uround, 0, 15));
+    let _ = writeln!(outfile, "reltol = {}", fmt_g(ark_mem.reltol, 0, 15));
+    let _ = writeln!(outfile, "Sabstol = {}", fmt_g(ark_mem.Sabstol, 0, 15));
+    let _ = writeln!(outfile, "fixedstep = {}", ark_mem.fixedstep as i32);
+    let _ = writeln!(outfile, "tolsf = {}", fmt_g(ark_mem.tolsf, 0, 15));
+    let _ = writeln!(outfile, "call_fullrhs = {}", ark_mem.call_fullrhs as i32);
+    let _ = writeln!(outfile, "do_adjoint = {}", ark_mem.do_adjoint as i32);
+    let _ = writeln!(outfile, "ensure_ycur = {}", ark_mem.ensure_ycur as i32);
+
+    /* output counters */
+    let _ = writeln!(outfile, "nhnil = {}", ark_mem.nhnil);
+    let _ = writeln!(outfile, "nst_attempts = {}", ark_mem.nst_attempts);
+    let _ = writeln!(outfile, "nst = {}", ark_mem.nst);
+    let _ = writeln!(outfile, "ncfn = {}", ark_mem.ncfn);
+    let _ = writeln!(outfile, "netf = {}", ark_mem.netf);
+
+    /* output time-stepping values */
+    let _ = writeln!(outfile, "hin = {}", fmt_g(ark_mem.hin, 0, 15));
+    let _ = writeln!(outfile, "h = {}", fmt_g(ark_mem.h, 0, 15));
+    let _ = writeln!(outfile, "hprime = {}", fmt_g(ark_mem.hprime, 0, 15));
+    let _ = writeln!(outfile, "next_h = {}", fmt_g(ark_mem.next_h, 0, 15));
+    let _ = writeln!(outfile, "eta = {}", fmt_g(ark_mem.eta, 0, 15));
+    let _ = writeln!(outfile, "tcur = {}", fmt_g(ark_mem.tcur, 0, 15));
+    let _ = writeln!(outfile, "tretlast = {}", fmt_g(ark_mem.tretlast, 0, 15));
+    let _ = writeln!(outfile, "hmin = {}", fmt_g(ark_mem.hmin, 0, 15));
+    let _ = writeln!(outfile, "hmax_inv = {}", fmt_g(ark_mem.hmax_inv, 0, 15));
+    let _ = writeln!(outfile, "h0u = {}", fmt_g(ark_mem.h0u, 0, 15));
+    let _ = writeln!(outfile, "tn = {}", fmt_g(ark_mem.tn, 0, 15));
+    let _ = writeln!(outfile, "hold = {}", fmt_g(ark_mem.hold, 0, 15));
+    let _ = writeln!(outfile, "maxnef = {}", ark_mem.maxnef);
+    let _ = writeln!(outfile, "maxncf = {}", ark_mem.maxncf);
+
+    /* output time-stepping adaptivity structure */
+    let _ = writeln!(outfile, "timestep adaptivity structure:");
+    crate::arkode_adapt::arkPrintAdaptMem(ark_mem.hadapt_mem.as_ref().unwrap(), outfile);
+
+    /* output inequality constraints quantities */
+    let _ = writeln!(outfile, "maxconstrfails = {}", ark_mem.maxconstrfails);
+
+    /* output root-finding quantities */
+    if ark_mem.root_mem.is_some() {
+        let _ = crate::arkode_root::arkPrintRootMem(ark_mem, outfile);
+    }
+
+    /* output interpolation quantities */
+    if ark_mem.interp.is_some() {
+        crate::arkode_interp::arkInterpPrintMem(ark_mem.interp.as_ref(), outfile);
+    } else {
+        let _ = writeln!(outfile, "interpolation = NULL");
+    }
+
+    /* Call stepper PrintMem function (if provided) */
+    if let Some(op) = ark_mem.step_printmem {
+        op(ark_mem, outfile);
+    }
+}
+
+/*---------------------------------------------------------------
   ARKodeFree:
 
   This routine frees the ARKODE infrastructure memory (all the

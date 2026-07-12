@@ -2287,3 +2287,514 @@ pub fn ARKodeGetNumConstrFails(ark_mem: &mut ARKodeMem, nconstrfails: &mut i64) 
     *nconstrfails = ark_mem.nconstrfails;
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKodeSetAdaptController:
+
+  Specifies a non-default SUNAdaptController time step controller
+  object. If a NULL-valued SUNAdaptController is input, the
+  default will be re-enabled.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetAdaptController(
+    ark_mem: &mut ARKodeMem,
+    c: Option<crate::sundials_adaptcontroller::SUNAdaptController>,
+) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeSetAdaptController", file!(),
+            "time-stepping module does not support temporal adaptivity");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* If the stepper has provided a custom function, then call it and return */
+    if let Some(op) = ark_mem.step_setadaptcontroller {
+        return op(ark_mem, c);
+    }
+
+    /* Otherwise, call a utility routine to replace the current controller object */
+    arkReplaceAdaptController(ark_mem, c, false)
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetAdaptControllerByName:
+
+  Specifies a SUNAdaptController time step controller object by
+  its name.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetAdaptControllerByName(ark_mem: &mut ARKodeMem, cname: &str) -> i32 {
+    use crate::arkode_impl::ARK_ILL_INPUT;
+    use crate::sunadaptcontroller_imexgus::SUNAdaptController_ImExGus;
+    use crate::sunadaptcontroller_soderlind::{
+        SUNAdaptController_ExpGus, SUNAdaptController_H0211, SUNAdaptController_H0321,
+        SUNAdaptController_H211, SUNAdaptController_H312, SUNAdaptController_I,
+        SUNAdaptController_ImpGus, SUNAdaptController_PI, SUNAdaptController_PID,
+        SUNAdaptController_Soderlind,
+    };
+
+    /* Create new controller based on the name */
+    let c = match cname {
+        "Soderlind" => SUNAdaptController_Soderlind(),
+        "PID" => SUNAdaptController_PID(),
+        "PI" => SUNAdaptController_PI(),
+        "I" => SUNAdaptController_I(),
+        "ExpGus" => SUNAdaptController_ExpGus(),
+        "ImpGus" => SUNAdaptController_ImpGus(),
+        "ImExGus" => SUNAdaptController_ImExGus(),
+        "H0211" => SUNAdaptController_H0211(),
+        "H0321" => SUNAdaptController_H0321(),
+        "H211" => SUNAdaptController_H211(),
+        "H312" => SUNAdaptController_H312(),
+        _ => {
+            arkProcessError(None, ARK_ILL_INPUT, line!(),
+                "ARKodeSetAdaptControllerByName", file!(), "Unknown controller");
+            return ARK_ILL_INPUT;
+        }
+    };
+
+    /* Send controller to be used by ARKODE, and set ownership flag so that
+       it gets freed automatically (C: retval = ARKodeSetAdaptController;
+       ark_mem->hadapt_mem->owncontroller = SUNTRUE) */
+    let retval = ARKodeSetAdaptController(ark_mem, Some(c));
+    if retval != ARK_SUCCESS {
+        return retval;
+    }
+    ark_mem.hadapt_mem.as_mut().unwrap().owncontroller = true;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetRootDirection:
+
+  Specifies the direction of zero-crossings to be monitored.
+  The default is to monitor both crossings.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetRootDirection(ark_mem: &mut ARKodeMem, rootdir: &[i32]) -> i32 {
+    use crate::arkode_impl::{ARK_ILL_INPUT, ARK_MEM_NULL, MSG_ARK_NO_MEM, MSG_ARK_NO_ROOT};
+
+    let root_mem = match ark_mem.root_mem.take() {
+        None => {
+            arkProcessError(Some(ark_mem), ARK_MEM_NULL, line!(),
+                "ARKodeSetRootDirection", file!(), MSG_ARK_NO_MEM);
+            return ARK_MEM_NULL;
+        }
+        Some(rm) => rm,
+    };
+    let mut root_mem = root_mem;
+
+    if root_mem.nrtfn == 0 {
+        ark_mem.root_mem = Some(root_mem);
+        arkProcessError(Some(ark_mem), ARK_ILL_INPUT, line!(),
+            "ARKodeSetRootDirection", file!(), MSG_ARK_NO_ROOT);
+        return ARK_ILL_INPUT;
+    }
+    for i in 0..root_mem.nrtfn as usize {
+        root_mem.rootdir[i] = rootdir[i];
+    }
+    ark_mem.root_mem = Some(root_mem);
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetPreStepFn:
+
+  Specifies a user-provided pre-step function; None disables it.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetPreStepFn(
+    ark_mem: &mut ARKodeMem,
+    prestep_fn: Option<crate::arkode_impl::ARKPreStepFn>,
+) -> i32 {
+    /* NULL argument disables the pre-step function */
+    ark_mem.PreStepFn = prestep_fn;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetPostStepFn:
+
+  Specifies a user-provided post-step function; None disables it.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetPostStepFn(
+    ark_mem: &mut ARKodeMem,
+    poststep_fn: Option<crate::arkode_impl::ARKPostStepFn>,
+) -> i32 {
+    /* NULL argument disables the post-step function */
+    ark_mem.PostStepFn = poststep_fn;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetPreRhsFn:
+
+  Specifies a user-provided pre-RHS function; None disables it.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetPreRhsFn(
+    ark_mem: &mut ARKodeMem,
+    prerhs_fn: Option<crate::arkode_impl::ARKPreRhsFn>,
+) -> i32 {
+    /* NULL argument disables the pre-RHS function */
+    ark_mem.PreRhsFn = prerhs_fn;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetPostprocessStepFn:
+
+  Specifies a user-provided step postprocessing function; None
+  disables it.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetPostprocessStepFn(
+    ark_mem: &mut ARKodeMem,
+    process_step: Option<crate::arkode_impl::ARKPostProcessFn>,
+) -> i32 {
+    /* NULL argument disables the postprocessing function */
+    ark_mem.PostProcessStepFn = process_step;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetPostprocessStageFn:
+
+  Specifies a user-provided stage postprocessing function; None
+  disables it.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetPostprocessStageFn(
+    ark_mem: &mut ARKodeMem,
+    process_stage: Option<crate::arkode_impl::ARKPostProcessFn>,
+) -> i32 {
+    /* NULL argument disables the postprocessing function */
+    ark_mem.PostProcessStageFn = process_stage;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetStabilityFn:
+
+  Specifies the user-provided explicit stability function to use.
+  A None argument sets the default.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetStabilityFn(
+    ark_mem: &mut ARKodeMem,
+    estab: Option<crate::arkode_impl::ARKExpStabFn>,
+    estab_data: crate::sundials_types::UserData,
+) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeSetStabilityFn", file!(),
+            "time-stepping module does not support temporal adaptivity");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* NULL argument sets default, otherwise set inputs */
+    let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+    hadapt_mem.expstab = estab;
+    hadapt_mem.estab_data = estab_data;
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetActualInitStep:
+
+  Returns the step size used on the first step.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetActualInitStep(ark_mem: &mut ARKodeMem, hinused: &mut f64) -> i32 {
+    *hinused = ark_mem.h0u;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetCurrentState:
+
+  Returns the current solution (before or after as step) or
+  stage value (during step solve). (C: *state = ark_mem->ycur.)
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetCurrentState(ark_mem: &ARKodeMem) -> &crate::nvector_serial::NVector {
+    &ark_mem.ycur
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetLastTime:
+
+  Returns the time of the last successful step.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetLastTime(ark_mem: &mut ARKodeMem, tn: &mut f64) -> i32 {
+    *tn = ark_mem.tn;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetLastState:
+
+  Returns the last saved time step solution.
+  (C: *yn = ark_mem->yn.)
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetLastState(ark_mem: &ARKodeMem) -> &crate::nvector_serial::NVector {
+    &ark_mem.yn
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetCurrentTime:
+
+  Returns the current value of the independent variable.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetCurrentTime(ark_mem: &mut ARKodeMem, tcur: &mut f64) -> i32 {
+    *tcur = ark_mem.tcur;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetTolScaleFactor:
+
+  Returns a suggested factor for scaling tolerances.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetTolScaleFactor(ark_mem: &mut ARKodeMem, tolsfact: &mut f64) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Guard against use for time steppers that do not use tolerances
+       (i.e., neither supports adaptivity nor needs an algebraic solver) */
+    if !ark_mem.step_supports_implicit && !ark_mem.step_supports_adaptive {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeGetTolScaleFactor", file!(),
+            "time-stepping module does not use tolerances");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    *tolsfact = ark_mem.tolsf;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetErrWeights:
+
+  This routine returns the current error weight vector.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetErrWeights(
+    ark_mem: &mut ARKodeMem,
+    eweight: &mut crate::nvector_serial::NVector,
+) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Guard against use for time steppers that do not use tolerances
+       (i.e., neither supports adaptivity nor needs an algebraic solver) */
+    if !ark_mem.step_supports_implicit && !ark_mem.step_supports_adaptive {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeGetErrWeights", file!(),
+            "time-stepping module does not use tolerances");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    crate::nvector_serial::N_VScale(crate::arkode_impl::ONE, &ark_mem.ewt, eweight);
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetResWeights:
+
+  This routine returns the current residual weight vector.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetResWeights(
+    ark_mem: &mut ARKodeMem,
+    rweight: &mut crate::nvector_serial::NVector,
+) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Guard against use for time steppers that do not support mass matrices */
+    if !ark_mem.step_supports_massmatrix {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeGetResWeights", file!(),
+            "time-stepping module does not support non-identity mass matrices");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    crate::nvector_serial::N_VScale(crate::arkode_impl::ONE, &ark_mem.rwt, rweight);
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetStepStats:
+
+  Returns step statistics.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetStepStats(
+    ark_mem: &mut ARKodeMem,
+    nsteps: &mut i64,
+    hinused: &mut f64,
+    hlast: &mut f64,
+    hcur: &mut f64,
+    tcur: &mut f64,
+) -> i32 {
+    *nsteps = ark_mem.nst;
+    *hinused = ark_mem.h0u;
+    *hlast = ark_mem.hold;
+    *hcur = ark_mem.next_h;
+    *tcur = ark_mem.tcur;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumExpSteps:
+
+  Returns the current number of stability-limited steps.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumExpSteps(ark_mem: &mut ARKodeMem, nsteps: &mut i64) -> i32 {
+    *nsteps = ark_mem.hadapt_mem.as_ref().unwrap().nst_exp;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumAccSteps:
+
+  Returns the current number of accuracy-limited steps.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumAccSteps(ark_mem: &mut ARKodeMem, nsteps: &mut i64) -> i32 {
+    *nsteps = ark_mem.hadapt_mem.as_ref().unwrap().nst_acc;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeComputeState:
+
+  Computes y based on the current prediction and a given
+  correction.
+  ---------------------------------------------------------------*/
+pub fn ARKodeComputeState(
+    ark_mem: &mut ARKodeMem,
+    zcor: &crate::nvector_serial::NVector,
+    z: &mut crate::nvector_serial::NVector,
+) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Guard against use for incompatible time stepper modules */
+    if !ark_mem.step_supports_implicit {
+        arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+            "ARKodeComputeState", file!(),
+            "time-stepping module does not support algebraic solvers");
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Call stepper routine to compute the state (if provided) */
+    if let Some(op) = ark_mem.step_computestate {
+        return op(ark_mem, zcor, z);
+    }
+    arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+        "ARKodeComputeState", file!(),
+        "time-stepping module does not support this function");
+    ARK_STEPPER_UNSUPPORTED
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetUserData:
+
+  Returns the user data pointer. (C: *user_data =
+  ark_mem->user_data.)
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetUserData(ark_mem: &mut ARKodeMem) -> &mut crate::sundials_types::UserData {
+    &mut ark_mem.user_data
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetStageIndex:
+
+  Returns the index of the current stage and the total number of
+  stages. If this is not supplied by the time-stepping module
+  then an error is returned and the values are set to (-1, -1).
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetStageIndex(ark_mem: &mut ARKodeMem, stage: &mut i32, max_stages: &mut i32) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Call stepper routine to compute the state (if provided) */
+    if let Some(op) = ark_mem.step_getstageindex {
+        return op(ark_mem, stage, max_stages);
+    }
+    *stage = -1;
+    *max_stages = -1;
+    arkProcessError(Some(ark_mem), ARK_STEPPER_UNSUPPORTED, line!(),
+        "ARKodeGetStageIndex", file!(),
+        "time-stepping module does not support this function");
+    ARK_STEPPER_UNSUPPORTED
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetReturnFlagName:
+
+  Returns the name of the constant associated with an ARKODE
+  return flag.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetReturnFlagName(flag: i64) -> String {
+    use crate::arkode_impl::*;
+    let flag_i32 = i32::try_from(flag).unwrap_or(i32::MIN); /* out-of-range -> "NONE" */
+    let name = match flag_i32 {
+        ARK_SUCCESS => "ARK_SUCCESS",
+        ARK_TSTOP_RETURN => "ARK_TSTOP_RETURN",
+        ARK_ROOT_RETURN => "ARK_ROOT_RETURN",
+        ARK_WARNING => "ARK_WARNING",
+        ARK_TOO_MUCH_WORK => "ARK_TOO_MUCH_WORK",
+        ARK_TOO_MUCH_ACC => "ARK_TOO_MUCH_ACC",
+        ARK_ERR_FAILURE => "ARK_ERR_FAILURE",
+        ARK_CONV_FAILURE => "ARK_CONV_FAILURE",
+        ARK_LINIT_FAIL => "ARK_LINIT_FAIL",
+        ARK_LSETUP_FAIL => "ARK_LSETUP_FAIL",
+        ARK_LSOLVE_FAIL => "ARK_LSOLVE_FAIL",
+        ARK_RHSFUNC_FAIL => "ARK_RHSFUNC_FAIL",
+        ARK_FIRST_RHSFUNC_ERR => "ARK_FIRST_RHSFUNC_ERR",
+        ARK_REPTD_RHSFUNC_ERR => "ARK_REPTD_RHSFUNC_ERR",
+        ARK_UNREC_RHSFUNC_ERR => "ARK_UNREC_RHSFUNC_ERR",
+        ARK_RTFUNC_FAIL => "ARK_RTFUNC_FAIL",
+        ARK_LFREE_FAIL => "ARK_LFREE_FAIL",
+        ARK_MASSINIT_FAIL => "ARK_MASSINIT_FAIL",
+        ARK_MASSSETUP_FAIL => "ARK_MASSSETUP_FAIL",
+        ARK_MASSSOLVE_FAIL => "ARK_MASSSOLVE_FAIL",
+        ARK_MASSFREE_FAIL => "ARK_MASSFREE_FAIL",
+        ARK_MASSMULT_FAIL => "ARK_MASSMULT_FAIL",
+        ARK_CONSTR_FAIL => "ARK_CONSTR_FAIL",
+        ARK_MEM_FAIL => "ARK_MEM_FAIL",
+        ARK_MEM_NULL => "ARK_MEM_NULL",
+        ARK_ILL_INPUT => "ARK_ILL_INPUT",
+        ARK_NO_MALLOC => "ARK_NO_MALLOC",
+        ARK_BAD_K => "ARK_BAD_K",
+        ARK_BAD_T => "ARK_BAD_T",
+        ARK_BAD_DKY => "ARK_BAD_DKY",
+        ARK_TOO_CLOSE => "ARK_TOO_CLOSE",
+        ARK_VECTOROP_ERR => "ARK_VECTOROP_ERR",
+        ARK_NLS_INIT_FAIL => "ARK_NLS_INIT_FAIL",
+        ARK_NLS_SETUP_FAIL => "ARK_NLS_SETUP_FAIL",
+        ARK_NLS_SETUP_RECVR => "ARK_NLS_SETUP_RECVR",
+        ARK_NLS_OP_ERR => "ARK_NLS_OP_ERR",
+        ARK_INNERSTEP_ATTACH_ERR => "ARK_INNERSTEP_ATTACH_ERR",
+        ARK_INNERSTEP_FAIL => "ARK_INNERSTEP_FAIL",
+        ARK_OUTERTOINNER_FAIL => "ARK_OUTERTOINNER_FAIL",
+        ARK_INNERTOOUTER_FAIL => "ARK_INNERTOOUTER_FAIL",
+        ARK_POSTPROCESS_STEP_FAIL => "ARK_POSTPROCESS_STEP_FAIL",
+        ARK_POSTPROCESS_STAGE_FAIL => "ARK_POSTPROCESS_STAGE_FAIL",
+        ARK_PRESTEPFN_FAIL => "ARK_PRESTEPFN_FAIL",
+        ARK_POSTSTEPFN_FAIL => "ARK_POSTSTEPFN_FAIL",
+        ARK_PRERHSFN_FAIL => "ARK_PRERHSFN_FAIL",
+        ARK_USER_PREDICT_FAIL => "ARK_USER_PREDICT_FAIL",
+        ARK_INTERP_FAIL => "ARK_INTERP_FAIL",
+        ARK_INVALID_TABLE => "ARK_INVALID_TABLE",
+        ARK_CONTEXT_ERR => "ARK_CONTEXT_ERR",
+        ARK_RELAX_FAIL => "ARK_RELAX_FAIL",
+        ARK_RELAX_MEM_NULL => "ARK_RELAX_MEM_NULL",
+        ARK_RELAX_FUNC_FAIL => "ARK_RELAX_FUNC_FAIL",
+        ARK_RELAX_JAC_FAIL => "ARK_RELAX_JAC_FAIL",
+        ARK_CONTROLLER_ERR => "ARK_CONTROLLER_ERR",
+        ARK_STEPPER_UNSUPPORTED => "ARK_STEPPER_UNSUPPORTED",
+        ARK_ADJ_RECOMPUTE_FAIL => "ARK_ADJ_RECOMPUTE_FAIL",
+        ARK_ADJ_CHECKPOINT_FAIL => "ARK_ADJ_CHECKPOINT_FAIL",
+        ARK_SUNADJSTEPPER_ERR => "ARK_SUNADJSTEPPER_ERR",
+        ARK_DOMEIG_FAIL => "ARK_DOMEIG_FAIL",
+        ARK_MAX_STAGE_LIMIT_FAIL => "ARK_MAX_STAGE_LIMIT_FAIL",
+        ARK_SUNSTEPPER_ERR => "ARK_SUNSTEPPER_ERR",
+        ARK_STEP_DIRECTION_ERR => "ARK_STEP_DIRECTION_ERR",
+        ARK_UNRECOGNIZED_ERROR => "ARK_UNRECOGNIZED_ERROR",
+        ARK_STEP_H0_FAIL => "ARK_STEP_H0_FAIL",
+        _ => "NONE",
+    };
+    name.to_string()
+}
