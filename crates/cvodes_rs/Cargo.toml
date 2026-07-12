@@ -75,3 +75,7 @@ path = "examples/cvsAdvDiff_FSA_non.rs"
 [[example]]
 name = "cvsRoberts_FSA_dns_Switch"
 path = "examples/cvsRoberts_FSA_dns_Switch.rs"
+
+[[example]]
+name = "cvsRoberts_FSA_dns_constraints"
+path = "examples/cvsRoberts_FSA_dns_constraints.rs"
