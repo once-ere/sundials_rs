@@ -59,3 +59,11 @@ path = "examples/ark_analytic_ssprk.rs"
 [[example]]
 name = "ark_analytic_partitioned"
 path = "examples/ark_analytic_partitioned.rs"
+
+[[example]]
+name = "ark_brusselator_mri"
+path = "examples/ark_brusselator_mri.rs"
+
+[[example]]
+name = "ark_brusselator_1D_mri"
+path = "examples/ark_brusselator_1D_mri.rs"

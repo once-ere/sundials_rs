@@ -1151,3 +1151,81 @@ pub fn ARKodeSetUseCompensatedSums(ark_mem: &mut ARKodeMem, onoff: bool) -> i32 
 
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKodeGetAccumulatedError:
+
+  This routine returns the accumulated temporal error estimate.
+  ---------------------------------------------------------------*/
+#[allow(clippy::if_same_then_else)] /* C's MAX/SUM branches kept verbatim */
+pub fn ARKodeGetAccumulatedError(ark_mem: &mut ARKodeMem, accum_error: &mut f64) -> i32 {
+    use crate::arkode_impl::{
+        arkProcessError, ARK_ACCUMERROR_AVG, ARK_ACCUMERROR_MAX, ARK_ACCUMERROR_SUM,
+        ARK_STEPPER_UNSUPPORTED, ARK_WARNING,
+    };
+
+    /* Return an error if the stepper cannot accumulate temporal error */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeGetAccumulatedError",
+            file!(),
+            "time-stepping module does not support accumulated error estimation",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Get time since last accumulated error reset */
+    let time_interval = ark_mem.tcur - ark_mem.AccumErrorStart;
+
+    /* Fill output based on error accumulation type */
+    if ark_mem.AccumErrorType == ARK_ACCUMERROR_MAX {
+        *accum_error = ark_mem.AccumError * ark_mem.reltol;
+    } else if ark_mem.AccumErrorType == ARK_ACCUMERROR_SUM {
+        *accum_error = ark_mem.AccumError * ark_mem.reltol;
+    } else if ark_mem.AccumErrorType == ARK_ACCUMERROR_AVG {
+        *accum_error = ark_mem.AccumError * ark_mem.reltol / time_interval;
+    } else {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_WARNING,
+            line!(),
+            "ARKodeGetAccumulatedError",
+            file!(),
+            "temporal error accumulation is currently disabled",
+        );
+        return ARK_WARNING;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeResetAccumulatedError:
+
+  This routine resets the accumulated temporal error estimate.
+  ---------------------------------------------------------------*/
+pub fn ARKodeResetAccumulatedError(ark_mem: &mut ARKodeMem) -> i32 {
+    use crate::arkode_impl::{arkProcessError, ARK_STEPPER_UNSUPPORTED};
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeResetAccumulatedError",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Reset value and counter, and return */
+    ark_mem.AccumErrorStart = ark_mem.tn;
+    ark_mem.AccumError = ZERO;
+
+    ARK_SUCCESS
+}

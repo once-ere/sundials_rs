@@ -99,9 +99,17 @@ verify_crate() {
         [ -f "$vref" ] || continue
         local base; base="$(basename "$vref" .out)"
         local suffix="${base#${name}_}"
-        case " $(printf '%s' "$names" | tr '\n' ' ') " in
-          *" ${name}_${suffix%%_*} "*) continue ;;
-        esac
+        # skip refs owned by a LONGER example name sharing this prefix
+        # (any number of extra underscore-joined tokens)
+        local owned_by_longer=0 other
+        for other in $names; do
+          [ "$other" = "$name" ] && continue
+          case "$base" in
+            "$other" | "${other}_"*)
+              if [ ${#other} -gt ${#name} ]; then owned_by_longer=1; fi ;;
+          esac
+        done
+        [ $owned_by_longer -eq 1 ] && continue
         local args
         args="$(awk -v k="$base" '$1 == k { $1=""; print substr($0,2); exit }' \
                 tools/verify_args.map 2>/dev/null)"

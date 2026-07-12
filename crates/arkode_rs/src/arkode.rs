@@ -3171,3 +3171,267 @@ pub fn arkFreeVecArray(
         *liw -= count as i64 * liw1;
     }
 }
+
+/*---------------------------------------------------------------
+  Utility routines for ARKODE to serve as an MRIStepInnerStepper
+  (C: arkode.c ARKodeCreateMRIStepInnerStepper + ark_MRIStepInner*)
+  ---------------------------------------------------------------*/
+
+/*------------------------------------------------------------------------------
+  ARKodeCreateMRIStepInnerStepper
+
+  Wraps an ARKODE integrator as an MRIStep inner stepper.  The Rust
+  port takes ownership of the wrapped integrator (stored as the
+  stepper content); C shares a raw pointer.  Returns None where C
+  returns an error flag.
+  ----------------------------------------------------------------------------*/
+pub fn ARKodeCreateMRIStepInnerStepper(
+    inner_arkode_mem: Box<ARKodeMem>,
+) -> Option<crate::arkode_mristep_impl::MRIStepInnerStepper> {
+    use crate::arkode_mristep::{
+        MRIStepInnerStepper_SetAccumulatedErrorGetFn, MRIStepInnerStepper_SetAccumulatedErrorResetFn,
+        MRIStepInnerStepper_SetContent, MRIStepInnerStepper_SetEvolveFn,
+        MRIStepInnerStepper_SetFullRhsFn, MRIStepInnerStepper_SetResetFn,
+        MRIStepInnerStepper_SetRTolFn,
+    };
+    use crate::arkode_mristep_impl::MRIStepInnerStepper;
+
+    /* return with an error if the ARKODE solver does not support forcing */
+    if inner_arkode_mem.step_setforcing.is_none() {
+        arkProcessError(
+            Some(&inner_arkode_mem),
+            crate::arkode_impl::ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeCreateMRIStepInnerStepper",
+            file!(),
+            "time-stepping module does not support forcing",
+        );
+        return None;
+    }
+
+    let mut stepper = MRIStepInnerStepper {
+        last_flag: ARK_SUCCESS,
+        ..Default::default()
+    };
+
+    let _ = MRIStepInnerStepper_SetContent(&mut stepper, Some(inner_arkode_mem));
+    let _ = MRIStepInnerStepper_SetEvolveFn(&mut stepper, ark_MRIStepInnerEvolve);
+    let _ = MRIStepInnerStepper_SetFullRhsFn(&mut stepper, ark_MRIStepInnerFullRhs);
+    let _ = MRIStepInnerStepper_SetResetFn(&mut stepper, ark_MRIStepInnerReset);
+    let _ = MRIStepInnerStepper_SetAccumulatedErrorGetFn(
+        &mut stepper,
+        ark_MRIStepInnerGetAccumulatedError,
+    );
+    let _ = MRIStepInnerStepper_SetAccumulatedErrorResetFn(
+        &mut stepper,
+        ark_MRIStepInnerResetAccumulatedError,
+    );
+    let _ = MRIStepInnerStepper_SetRTolFn(&mut stepper, ark_MRIStepInnerSetRTol);
+
+    Some(stepper)
+}
+
+/*------------------------------------------------------------------------------
+  ark_MRIStepInnerEvolve
+
+  Implementation of MRIStepInnerStepperEvolveFn to advance the inner (fast)
+  ODE IVP.
+  ----------------------------------------------------------------------------*/
+fn ark_MRIStepInnerEvolve(
+    stepper: &mut crate::arkode_mristep_impl::MRIStepInnerStepper,
+    _t0: f64,
+    tout: f64,
+    y: &mut NVector,
+) -> i32 {
+    use crate::arkode_impl::{ARK_CONV_FAILURE, ARK_ERR_FAILURE, ARK_TOO_MUCH_WORK};
+
+    /* extract the ARKODE memory struct and the forcing data */
+    let crate::arkode_mristep_impl::MRIStepInnerStepper {
+        content,
+        forcing,
+        nforcing,
+        tshift,
+        tscale,
+        ..
+    } = stepper;
+    let ark_mem = match content.as_mut().and_then(|c| c.downcast_mut::<ARKodeMem>()) {
+        Some(m) => m,
+        None => return -1,
+    };
+
+    /* set the inner forcing data */
+    let step_setforcing = match ark_mem.step_setforcing {
+        Some(f) => f,
+        None => return -1,
+    };
+    let mut retval = step_setforcing(ark_mem, *tshift, *tscale, forcing, *nforcing);
+    if retval != ARK_SUCCESS {
+        return -1;
+    }
+
+    /* set the stop time */
+    retval = crate::arkode_io::ARKodeSetStopTime(ark_mem, tout);
+    if retval != ARK_SUCCESS {
+        return -1;
+    }
+
+    /* evolve inner ODE, consider all positive return values as 'success' */
+    let mut tret: f64 = 0.0;
+    retval = ARKodeEvolve(ark_mem, tout, y, &mut tret, crate::arkode_impl::ARK_NORMAL);
+    if retval > 0 {
+        retval = 0;
+    }
+
+    /* set a recoverable failure for a few ARKODE failure modes;
+       on other ARKODE errors return with an unrecoverable failure */
+    if retval < 0 {
+        if retval == ARK_TOO_MUCH_WORK || retval == ARK_CONV_FAILURE || retval == ARK_ERR_FAILURE {
+            retval = 1;
+        } else {
+            return -1;
+        }
+    }
+
+    /* disable inner forcing */
+    if step_setforcing(ark_mem, ZERO, ONE, &[], 0) != ARK_SUCCESS {
+        return -1;
+    }
+
+    retval
+}
+
+/*------------------------------------------------------------------------------
+  ark_MRIStepInnerFullRhs
+
+  Implementation of MRIStepInnerStepperFullRhsFn to compute the full inner
+  (fast) ODE IVP RHS.
+  ----------------------------------------------------------------------------*/
+fn ark_MRIStepInnerFullRhs(
+    stepper: &mut crate::arkode_mristep_impl::MRIStepInnerStepper,
+    t: f64,
+    y: &NVector,
+    f: &mut NVector,
+    mode: i32,
+) -> i32 {
+    let ark_mem = match stepper
+        .content
+        .as_mut()
+        .and_then(|c| c.downcast_mut::<ARKodeMem>())
+    {
+        Some(m) => m,
+        None => return -1,
+    };
+    let step_fullrhs = match ark_mem.step_fullrhs {
+        Some(fr) => fr,
+        None => return -1,
+    };
+    let retval = step_fullrhs(ark_mem, t, y, f, mode);
+    if retval == ARK_SUCCESS {
+        return 0;
+    }
+    -1
+}
+
+/*------------------------------------------------------------------------------
+  ark_MRIStepInnerReset
+
+  Implementation of MRIStepInnerStepperResetFn to reset the inner (fast)
+  stepper state.
+  ----------------------------------------------------------------------------*/
+fn ark_MRIStepInnerReset(
+    stepper: &mut crate::arkode_mristep_impl::MRIStepInnerStepper,
+    tR: f64,
+    yR: &NVector,
+) -> i32 {
+    let ark_mem = match stepper
+        .content
+        .as_mut()
+        .and_then(|c| c.downcast_mut::<ARKodeMem>())
+    {
+        Some(m) => m,
+        None => return -1,
+    };
+    let retval = ARKodeReset(ark_mem, tR, yR);
+    if retval == ARK_SUCCESS {
+        return 0;
+    }
+    -1
+}
+
+/*------------------------------------------------------------------------------
+  ark_MRIStepInnerGetAccumulatedError
+
+  Implementation of MRIStepInnerGetAccumulatedError to retrieve the accumulated
+  temporal error estimate from the inner (fast) stepper.
+  ----------------------------------------------------------------------------*/
+fn ark_MRIStepInnerGetAccumulatedError(
+    stepper: &mut crate::arkode_mristep_impl::MRIStepInnerStepper,
+    accum_error: &mut f64,
+) -> i32 {
+    let ark_mem = match stepper
+        .content
+        .as_mut()
+        .and_then(|c| c.downcast_mut::<ARKodeMem>())
+    {
+        Some(m) => m,
+        None => return -1,
+    };
+    let retval = crate::arkode_io::ARKodeGetAccumulatedError(ark_mem, accum_error);
+    if retval == ARK_SUCCESS {
+        return 0;
+    }
+    if retval > 0 {
+        return 1;
+    }
+    -1
+}
+
+/*------------------------------------------------------------------------------
+  ark_MRIStepInnerResetAccumulatedError
+
+  Implementation of MRIStepInnerResetAccumulatedError to reset the accumulated
+  temporal error estimator in the inner (fast) stepper.
+  ----------------------------------------------------------------------------*/
+fn ark_MRIStepInnerResetAccumulatedError(
+    stepper: &mut crate::arkode_mristep_impl::MRIStepInnerStepper,
+) -> i32 {
+    let ark_mem = match stepper
+        .content
+        .as_mut()
+        .and_then(|c| c.downcast_mut::<ARKodeMem>())
+    {
+        Some(m) => m,
+        None => return -1,
+    };
+    let retval = crate::arkode_io::ARKodeResetAccumulatedError(ark_mem);
+    if retval == ARK_SUCCESS {
+        return 0;
+    }
+    -1
+}
+
+/*------------------------------------------------------------------------------
+  ark_MRIStepInnerSetRTol
+
+  Implementation of MRIStepInnerSetRTol to set a relative tolerance for the
+  upcoming evolution using the inner (fast) stepper.
+  ----------------------------------------------------------------------------*/
+fn ark_MRIStepInnerSetRTol(
+    stepper: &mut crate::arkode_mristep_impl::MRIStepInnerStepper,
+    rtol: f64,
+) -> i32 {
+    let ark_mem = match stepper
+        .content
+        .as_mut()
+        .and_then(|c| c.downcast_mut::<ARKodeMem>())
+    {
+        Some(m) => m,
+        None => return -1,
+    };
+    if rtol > ZERO {
+        ark_mem.reltol = rtol;
+        0
+    } else {
+        -1
+    }
+}
