@@ -99,3 +99,7 @@ path = "examples/cvsRoberts_ASAi_dns_constraints.rs"
 [[example]]
 name = "cvsLotkaVolterra_ASA"
 path = "examples/cvsLotkaVolterra_ASA.rs"
+
+[[example]]
+name = "cvsHessian_ASA_FSA"
+path = "examples/cvsHessian_ASA_FSA.rs"
