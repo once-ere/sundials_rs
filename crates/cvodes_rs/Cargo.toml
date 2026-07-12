@@ -83,3 +83,7 @@ path = "examples/cvsRoberts_FSA_dns_constraints.rs"
 [[example]]
 name = "cvsDiurnal_FSA_kry"
 path = "examples/cvsDiurnal_FSA_kry.rs"
+
+[[example]]
+name = "cvsAdvDiff_ASAi_bnd"
+path = "examples/cvsAdvDiff_ASAi_bnd.rs"
