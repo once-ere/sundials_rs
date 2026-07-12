@@ -17,3 +17,6 @@ bruss1D_mesh.txt
 bruss1D_u_*.txt
 bruss1D_v_*.txt
 bruss1D_w_*.txt
+ark_onewaycouple_mri_solution.txt
+ark_reaction_diffusion_mri_slow_stats.csv
+ark_reaction_diffusion_mri_fast_stats.csv

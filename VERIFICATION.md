@@ -177,8 +177,8 @@ error-path checks.
 | ark_kepler | 1 IDENTICAL + 12 LOCAL-C (all 13 arg variants byte-match a freshly built 7.7.0 C binary; shipped .out files predate the SUN_TABLE_WIDTH 28->29 change; covers SPRK standard + compensated-sum steps, 9 SPRK tables, SPRK rootfinding, explicit ARKStep ERK fixed/adaptive, tstop, check-order) |
 | ark_kpr_mri | todo |
 | ark_lotka_volterra_ASA | todo |
-| ark_onewaycouple_mri | todo |
-| ark_reaction_diffusion_mri | todo |
+| ark_onewaycouple_mri | IDENTICAL (shipped ref; explicit MIS slow over KNOTH_WOLKE_3_3 fast on the 3-component one-way-coupled system with analytic max-error output; aliased error N_VLinearSum via linear_sum_with — verified byte-exact on first run) |
+| ark_reaction_diffusion_mri | LOCAL-C (stdout AND both PrintAllStats CSV files byte-identical to a fresh 7.7.0 C build; shipped ref stale SUN_TABLE_WIDTH 28 vs 29 — all numeric values identical. 1001-point reaction-diffusion, explicit MIS/KW3 with 153051 fast steps; exercises slow+fast ARKodePrintAllStats TABLE/CSV incl. the borrowed inner integrator) |
 | ark_robertson | IDENTICAL (shipped ref; stiff DIRK + arkPredict_MaximumOrder (predictor 1) + full ARKodePrintAllStats TABLE output to stdout, verified byte-exact) |
 | ark_robertson_constraints | IDENTICAL (shipped ref; exercises ARKodeSetConstraints + the arkCheckConstraints path and ARKodeGetNumConstrFails, verified byte-exact on first run) |
 | ark_robertson_root | IDENTICAL (shipped ref; exercises ARKodeRootInit/GetRootInfo end-to-end — Illinois rootfinder, SVtolerances, arkHin auto initial step — verified byte-exact) |

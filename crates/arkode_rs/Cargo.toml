@@ -103,3 +103,11 @@ path = "examples/ark_brusselator1D.rs"
 [[example]]
 name = "ark_brusselator1D_imexmri"
 path = "examples/ark_brusselator1D_imexmri.rs"
+
+[[example]]
+name = "ark_onewaycouple_mri"
+path = "examples/ark_onewaycouple_mri.rs"
+
+[[example]]
+name = "ark_reaction_diffusion_mri"
+path = "examples/ark_reaction_diffusion_mri.rs"
