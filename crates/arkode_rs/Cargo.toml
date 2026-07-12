@@ -119,3 +119,7 @@ path = "examples/ark_harmonic_symplectic.rs"
 [[example]]
 name = "ark_damped_harmonic_symplectic"
 path = "examples/ark_damped_harmonic_symplectic.rs"
+
+[[example]]
+name = "ark_advection_diffusion_reaction_splitting"
+path = "examples/ark_advection_diffusion_reaction_splitting.rs"

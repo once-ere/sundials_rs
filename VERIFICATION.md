@@ -155,7 +155,7 @@ error-path checks.
 | example | status |
 |---|---|
 | ark_KrylovDemo_prec | IDENTICAL incl. _1/_2 nrmfactor arg variants (shipped refs; matrix-free SPGMR + user Precond/PSolve + DQ Jtimes + ARKStepReInit + workspace accounting, all four jpre/gstype runs byte-exact) |
-| ark_advection_diffusion_reaction_splitting | todo |
+| ark_advection_diffusion_reaction_splitting | IDENTICAL (shipped ref; three-partition operator splitting — SSP ERK (SHU_OSHER_3_2_3) advection + order-3 DIRK/band diffusion + order-3 ERK reaction over ARKStep/ERKStep-backed SUNSteppers, per-partition PrintAllStats via the borrowed-inner idiom — verified byte-exact on first run) |
 | ark_analytic | IDENTICAL x2 (shipped refs; first implicit ARKStep example — DIRK + Newton + dense ARKLS + SetLinear; the scalar_tolerances/table_names CLI arg variant passes via ARKodeSetOptions + arkStep_SetOptions with an ESDIRK547L2SA table override) |
 | ark_analytic_lsrk (+_varjac, _domeigest, _domeigest arg variant, _ssprk) | LOCAL-C x5 (byte-identical to fresh 7.7.0 C build incl. all stats; shipped refs stale; covers RKL/RKC STS with user dom-eig fn, power-iteration SUNDomEigEstimator with warmup/max_iters options, and the SSP(9,3) path) |
 | ark_analytic_mels | IDENTICAL (shipped ref; custom matrix-embedded SUNLinearSolver via the core CustomLinSol trait — solve callback receives (t, gamma, user_data) per the pinned cvAnalytic_mels adaptation; exposed a latent bug where linit ran with step_mem detached so the MELS lsetup-disable no-op'd) |
