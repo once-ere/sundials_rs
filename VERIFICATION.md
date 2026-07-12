@@ -173,7 +173,7 @@ example.
 | ark_lotka_volterra_ASA | todo |
 | ark_onewaycouple_mri | todo |
 | ark_reaction_diffusion_mri | todo |
-| ark_robertson | todo |
+| ark_robertson | IDENTICAL (shipped ref; stiff DIRK + arkPredict_MaximumOrder (predictor 1) + full ARKodePrintAllStats TABLE output to stdout, verified byte-exact) |
 | ark_robertson_constraints | todo |
-| ark_robertson_root | todo |
+| ark_robertson_root | IDENTICAL (shipped ref; exercises ARKodeRootInit/GetRootInfo end-to-end — Illinois rootfinder, SVtolerances, arkHin auto initial step — verified byte-exact) |
 | ark_twowaycouple_mri | todo |

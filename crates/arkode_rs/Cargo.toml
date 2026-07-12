@@ -23,3 +23,11 @@ path = "examples/ark_brusselator.rs"
 [[example]]
 name = "ark_brusselator_fp"
 path = "examples/ark_brusselator_fp.rs"
+
+[[example]]
+name = "ark_robertson"
+path = "examples/ark_robertson.rs"
+
+[[example]]
+name = "ark_robertson_root"
+path = "examples/ark_robertson_root.rs"

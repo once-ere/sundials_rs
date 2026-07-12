@@ -910,3 +910,88 @@ pub fn ARKodeGetNumStepSolveFails(ark_mem: &mut ARKodeMem, nncfails: &mut i64) -
     *nncfails = ark_mem.ncfn;
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKodeSetMaxErrTestFails:
+
+  Specifies the maximum number of error test failures during one
+  step try.  A non-positive input implies a reset to the default.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMaxErrTestFails(ark_mem: &mut ARKodeMem, maxnef: i32) -> i32 {
+    use crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+
+    /* Guard against use for non-adaptive time stepper modules */
+    if !ark_mem.step_supports_adaptive {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMaxErrTestFails",
+            file!(),
+            "time-stepping module does not support temporal adaptivity",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* argument <= 0 sets default, otherwise set input */
+    if maxnef <= 0 {
+        ark_mem.maxnef = MAXNEF;
+    } else {
+        ark_mem.maxnef = maxnef;
+    }
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumGEvals:
+
+  Returns the current number of calls to the root function g
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumGEvals(ark_mem: &mut ARKodeMem, ngevals: &mut i64) -> i32 {
+    use crate::arkode_impl::ARK_MEM_NULL;
+
+    let root_mem = match ark_mem.root_mem.as_ref() {
+        Some(rm) => rm,
+        None => {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKodeGetNumGEvals",
+                file!(),
+                "arkode_mem = NULL illegal.",
+            );
+            return ARK_MEM_NULL;
+        }
+    };
+    *ngevals = root_mem.nge;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetRootInfo:
+
+  Returns pointer to array rootsfound showing roots found
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetRootInfo(ark_mem: &mut ARKodeMem, rootsfound: &mut [i32]) -> i32 {
+    use crate::arkode_impl::ARK_MEM_NULL;
+
+    let root_mem = match ark_mem.root_mem.as_ref() {
+        Some(rm) => rm,
+        None => {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKodeGetRootInfo",
+                file!(),
+                "arkode_mem = NULL illegal.",
+            );
+            return ARK_MEM_NULL;
+        }
+    };
+    for i in 0..root_mem.nrtfn as usize {
+        rootsfound[i] = root_mem.iroots[i];
+    }
+    ARK_SUCCESS
+}
