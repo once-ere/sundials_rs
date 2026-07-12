@@ -111,3 +111,11 @@ path = "examples/ark_onewaycouple_mri.rs"
 [[example]]
 name = "ark_reaction_diffusion_mri"
 path = "examples/ark_reaction_diffusion_mri.rs"
+
+[[example]]
+name = "ark_harmonic_symplectic"
+path = "examples/ark_harmonic_symplectic.rs"
+
+[[example]]
+name = "ark_damped_harmonic_symplectic"
+path = "examples/ark_damped_harmonic_symplectic.rs"
