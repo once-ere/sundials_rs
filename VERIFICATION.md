@@ -147,7 +147,7 @@ example.
 |---|---|
 | ark_KrylovDemo_prec | todo |
 | ark_advection_diffusion_reaction_splitting | todo |
-| ark_analytic | todo |
+| ark_analytic | IDENTICAL (shipped ref; first implicit ARKStep example — DIRK + Newton + dense ARKLS + SetLinear, verified byte-exact). Arg-variant refs (table_names override) pending the CLI module |
 | ark_analytic_lsrk | todo |
 | ark_analytic_lsrk_domeigest | todo |
 | ark_analytic_lsrk_varjac | todo |

@@ -15,7 +15,8 @@ use crate::arkode_adapt_impl::{
     SMALL_NEF,
 };
 use crate::arkode_impl::{
-    ARKodeMem, ARK_SS, ARK_SUCCESS, MAXCONSTRFAILS, MAXNCF, MAXNEF, MXHNIL, MXSTEP_DEFAULT, ZERO,
+    arkProcessError, ARKodeMem, ARK_SS, ARK_SUCCESS, MAXCONSTRFAILS, MAXNCF, MAXNEF, MXHNIL,
+    MXSTEP_DEFAULT, ZERO,
 };
 
 /*---------------------------------------------------------------
@@ -453,7 +454,7 @@ pub fn arkReplaceAdaptController(
 
 const SUN_TABLE_WIDTH: usize = 29;
 
-fn sunfprintf_real(
+pub(crate) fn sunfprintf_real(
     outfile: &mut dyn std::io::Write,
     fmt: crate::sundials_types::SUNOutputFormat,
     start: bool,
@@ -476,7 +477,7 @@ fn sunfprintf_real(
     }
 }
 
-fn sunfprintf_long(
+pub(crate) fn sunfprintf_long(
     outfile: &mut dyn std::io::Write,
     fmt: crate::sundials_types::SUNOutputFormat,
     start: bool,
@@ -546,6 +547,293 @@ pub fn ARKodePrintAllStats(
     /* Print stepper stats (if provided) */
     if let Some(step_printallstats) = ark_mem.step_printallstats {
         return step_printallstats(ark_mem, outfile, fmt);
+    }
+
+    ARK_SUCCESS
+}
+
+/*===============================================================
+  Stepper-op dispatch wrappers (arkode_io.c) — implicit-solver
+  option/stat families, added with the ARKStep port.
+  ===============================================================*/
+
+/* Set routines guarded by step_supports_implicit; fallback error
+   matches C ("time-stepping module does not support this function"). */
+macro_rules! ark_io_dispatch_implicit {
+    ($name:ident, $op:ident $(, $arg:ident : $ty:ty)*) => {
+        pub fn $name(ark_mem: &mut ARKodeMem $(, $arg: $ty)*) -> i32 {
+            /* Guard against use for time steppers that do not need an
+               algebraic solver */
+            if !ark_mem.step_supports_implicit {
+                arkProcessError(
+                    Some(ark_mem),
+                    crate::arkode_impl::ARK_STEPPER_UNSUPPORTED,
+                    line!(),
+                    stringify!($name),
+                    file!(),
+                    "time-stepping module does not require an algebraic solver",
+                );
+                return crate::arkode_impl::ARK_STEPPER_UNSUPPORTED;
+            }
+
+            /* Call stepper routine (if provided) */
+            if let Some(op) = ark_mem.$op {
+                return op(ark_mem $(, $arg)*);
+            }
+            arkProcessError(
+                Some(ark_mem),
+                crate::arkode_impl::ARK_STEPPER_UNSUPPORTED,
+                line!(),
+                stringify!($name),
+                file!(),
+                "time-stepping module does not support this function",
+            );
+            crate::arkode_impl::ARK_STEPPER_UNSUPPORTED
+        }
+    };
+}
+
+/* Stat getters with a zero fallback when the stepper lacks the op. */
+macro_rules! ark_io_stat_zero_fallback {
+    ($name:ident, $op:ident $(, $arg:ident : $ty:ty)*) => {
+        pub fn $name(ark_mem: &mut ARKodeMem $(, $arg: $ty)*) -> i32 {
+            /* Call stepper routine (if provided) */
+            if let Some(op) = ark_mem.$op {
+                return op(ark_mem $(, $arg)*);
+            }
+            $( *$arg = 0; )*
+            ARK_SUCCESS
+        }
+    };
+}
+
+ark_io_dispatch_implicit!(
+    ARKodeSetNonlinearSolver,
+    step_setnonlinearsolver,
+    nls: crate::sundials_nonlinearsolver::NonlinearSolver
+);
+ark_io_dispatch_implicit!(ARKodeSetLinear, step_setlinear, timedepend: i32);
+ark_io_dispatch_implicit!(ARKodeSetNonlinear, step_setnonlinear);
+ark_io_dispatch_implicit!(ARKodeSetAutonomous, step_setautonomous, autonomous: bool);
+ark_io_dispatch_implicit!(
+    ARKodeSetNlsRhsFn,
+    step_setnlsrhsfn,
+    nls_fi: Option<crate::arkode_impl::ARKRhsFn>
+);
+ark_io_dispatch_implicit!(
+    ARKodeSetDeduceImplicitRhs,
+    step_setdeduceimplicitrhs,
+    deduce: bool
+);
+ark_io_dispatch_implicit!(ARKodeSetPredictorMethod, step_setpredictormethod, method: i32);
+ark_io_dispatch_implicit!(ARKodeSetMaxNonlinIters, step_setmaxnonliniters, maxcor: i32);
+ark_io_dispatch_implicit!(ARKodeSetNonlinConvCoef, step_setnonlinconvcoef, nlscoef: f64);
+ark_io_dispatch_implicit!(ARKodeSetNonlinCRDown, step_setnonlincrdown, crdown: f64);
+ark_io_dispatch_implicit!(ARKodeSetNonlinRDiv, step_setnonlinrdiv, rdiv: f64);
+ark_io_dispatch_implicit!(ARKodeSetDeltaGammaMax, step_setdeltagammamax, dgmax: f64);
+ark_io_dispatch_implicit!(ARKodeSetLSetupFrequency, step_setlsetupfrequency, msbp: i32);
+ark_io_dispatch_implicit!(
+    ARKodeSetStagePredictFn,
+    step_setstagepredictfn,
+    predict_stage: Option<crate::arkode_impl::ARKStagePredictFn>
+);
+ark_io_dispatch_implicit!(ARKodeGetCurrentGamma, step_getcurrentgamma, gamma: &mut f64);
+
+ark_io_stat_zero_fallback!(
+    ARKodeGetNumLinSolvSetups,
+    step_getnumlinsolvsetups,
+    nlinsetups: &mut i64
+);
+ark_io_stat_zero_fallback!(
+    ARKodeGetNumNonlinSolvIters,
+    step_getnumnonlinsolviters,
+    nniters: &mut i64
+);
+ark_io_stat_zero_fallback!(
+    ARKodeGetNumNonlinSolvConvFails,
+    step_getnumnonlinsolvconvfails,
+    nnfails: &mut i64
+);
+ark_io_stat_zero_fallback!(
+    ARKodeGetNonlinSolvStats,
+    step_getnonlinsolvstats,
+    nniters: &mut i64,
+    nnfails: &mut i64
+);
+
+/*---------------------------------------------------------------
+  ARKodeGetNumRhsEvals: dispatches to the stepper (no zero
+  fallback in C).
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumRhsEvals(
+    ark_mem: &mut ARKodeMem,
+    partition_index: i32,
+    num_rhs_evals: &mut i64,
+) -> i32 {
+    /* Call stepper routine (if provided) */
+    if let Some(op) = ark_mem.step_getnumrhsevals {
+        return op(ark_mem, partition_index, num_rhs_evals);
+    }
+    arkProcessError(
+        Some(ark_mem),
+        crate::arkode_impl::ARK_STEPPER_UNSUPPORTED,
+        line!(),
+        "ARKodeGetNumRhsEvals",
+        file!(),
+        "time-stepping module does not support this function",
+    );
+    crate::arkode_impl::ARK_STEPPER_UNSUPPORTED
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetEstLocalErrors: Returns the current local truncation
+  error estimate vector.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetEstLocalErrors(
+    ark_mem: &mut ARKodeMem,
+    ele: &mut crate::nvector_serial::NVector,
+) -> i32 {
+    /* Call stepper-specific routine (if provided); otherwise return an error */
+    if let Some(op) = ark_mem.step_getestlocalerrors {
+        return op(ark_mem, ele);
+    }
+    arkProcessError(
+        Some(ark_mem),
+        crate::arkode_impl::ARK_STEPPER_UNSUPPORTED,
+        line!(),
+        "ARKodeGetEstLocalErrors",
+        file!(),
+        "time-stepping module does provide a temporal error estimate",
+    );
+    crate::arkode_impl::ARK_STEPPER_UNSUPPORTED
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumSteps:
+
+  Returns the current number of integration steps
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumSteps(ark_mem: &mut ARKodeMem, nsteps: &mut i64) -> i32 {
+    *nsteps = ark_mem.nst;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumStepAttempts:
+
+  Returns the current number of steps attempted by the solver
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumStepAttempts(ark_mem: &mut ARKodeMem, nstep_attempts: &mut i64) -> i32 {
+    *nstep_attempts = ark_mem.nst_attempts;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumErrTestFails:
+
+  Returns the current number of error test failures
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumErrTestFails(ark_mem: &mut ARKodeMem, netfails: &mut i64) -> i32 {
+    *netfails = ark_mem.netf;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeWriteParameters:
+
+  Outputs all solver parameters to the provided file pointer.
+  ---------------------------------------------------------------*/
+pub fn ARKodeWriteParameters(ark_mem: &mut ARKodeMem, fp: &mut dyn std::io::Write) -> i32 {
+    use crate::arkode_impl::{ARK_WF, ONE};
+    use crate::sundials_utils::fmt_g;
+
+    /* print integrator parameters to file */
+    let _ = write!(fp, "ARKODE solver parameters:\n");
+    if ark_mem.hmin != ZERO {
+        let _ = write!(fp, "  Minimum step size = {}\n", fmt_g(ark_mem.hmin, 0, 15));
+    }
+    if ark_mem.hmax_inv != ZERO {
+        let _ = write!(fp, "  Maximum step size = {}\n", fmt_g(ONE / ark_mem.hmax_inv, 0, 15));
+    }
+    if ark_mem.fixedstep {
+        let _ = write!(fp, "  Fixed time-stepping enabled\n");
+    }
+    if ark_mem.itol == ARK_WF {
+        let _ = write!(fp, "  User provided error weight function\n");
+    } else {
+        let _ = write!(fp, "  Solver relative tolerance = {}\n", fmt_g(ark_mem.reltol, 0, 15));
+        if ark_mem.itol == ARK_SS {
+            let _ = write!(fp, "  Solver absolute tolerance = {}\n", fmt_g(ark_mem.Sabstol, 0, 15));
+        } else {
+            let _ = write!(fp, "  Vector-valued solver absolute tolerance\n");
+        }
+    }
+    if !ark_mem.rwt_is_ewt {
+        if ark_mem.ritol == ARK_WF {
+            let _ = write!(fp, "  User provided residual weight function\n");
+        } else {
+            if ark_mem.ritol == ARK_SS {
+                let _ = write!(
+                    fp,
+                    "  Absolute residual tolerance = {}\n",
+                    fmt_g(ark_mem.SRabstol, 0, 15)
+                );
+            } else {
+                let _ = write!(fp, "  Vector-valued residual absolute tolerance\n");
+            }
+        }
+    }
+    if ark_mem.hin != ZERO {
+        let _ = write!(fp, "  Initial step size = {}\n", fmt_g(ark_mem.hin, 0, 15));
+    }
+    let _ = write!(fp, "\n");
+    {
+        let ha = ark_mem.hadapt_mem.as_mut().unwrap();
+        let _ = write!(
+            fp,
+            "  Maximum step increase (first step) = {}\n",
+            fmt_g(ha.etamx1, 0, 15)
+        );
+        let _ = write!(
+            fp,
+            "  Step reduction factor on multiple error fails = {}\n",
+            fmt_g(ha.etamxf, 0, 15)
+        );
+        let _ = write!(
+            fp,
+            "  Minimum error fails before above factor is used = {}\n",
+            ha.small_nef
+        );
+        let _ = write!(
+            fp,
+            "  Step reduction factor on nonlinear convergence failure = {}\n",
+            fmt_g(ha.etacf, 0, 15)
+        );
+        let _ = write!(fp, "  Explicit safety factor = {}\n", fmt_g(ha.cfl, 0, 15));
+        let _ = write!(fp, "  Safety factor = {}\n", fmt_g(ha.safety, 0, 15));
+        let _ = write!(fp, "  Growth factor = {}\n", fmt_g(ha.growth, 0, 15));
+        let _ = write!(fp, "  Step growth lower bound = {}\n", fmt_g(ha.lbound, 0, 15));
+        let _ = write!(fp, "  Step growth upper bound = {}\n", fmt_g(ha.ubound, 0, 15));
+        if ha.expstab.is_none() {
+            let _ = write!(fp, "  No explicit stability function supplied\n");
+        } else {
+            let _ = write!(fp, "  User provided explicit stability function\n");
+        }
+        if let Some(hc) = ha.hcontroller.as_mut() {
+            let _ = crate::sundials_adaptcontroller::SUNAdaptController_Write(hc, fp);
+        }
+    }
+
+    let _ = write!(fp, "  Maximum number of error test failures = {}\n", ark_mem.maxnef);
+    let _ = write!(
+        fp,
+        "  Maximum number of convergence test failures = {}\n",
+        ark_mem.maxncf
+    );
+
+    /* Call stepper routine (if provided) */
+    if let Some(op) = ark_mem.step_writeparameters {
+        return op(ark_mem, fp);
     }
 
     ARK_SUCCESS

@@ -1,2 +1,5 @@
 target/
 logs/
+solution.txt
+*_stats*.csv
+new_prompt.md

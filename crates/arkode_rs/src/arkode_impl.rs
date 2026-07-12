@@ -418,7 +418,9 @@ pub type ARKTimestepSetNonlinearSolver =
 pub type ARKTimestepSetLinear = fn(ark_mem: &mut ARKodeMem, timedepend: i32) -> i32;
 pub type ARKTimestepSetNonlinear = fn(ark_mem: &mut ARKodeMem) -> i32;
 pub type ARKTimestepSetAutonomous = fn(ark_mem: &mut ARKodeMem, autonomous: bool) -> i32;
-pub type ARKTimestepSetNlsRhsFn = fn(ark_mem: &mut ARKodeMem, nls_fi: ARKRhsFn) -> i32;
+/// C allows a NULL nls_fi (reset to the stepper's fi).
+pub type ARKTimestepSetNlsRhsFn =
+    fn(ark_mem: &mut ARKodeMem, nls_fi: Option<ARKRhsFn>) -> i32;
 pub type ARKTimestepSetDeduceImplicitRhs = fn(ark_mem: &mut ARKodeMem, deduce: bool) -> i32;
 pub type ARKTimestepSetNonlinCRDown = fn(ark_mem: &mut ARKodeMem, crdown: f64) -> i32;
 pub type ARKTimestepSetNonlinRDiv = fn(ark_mem: &mut ARKodeMem, rdiv: f64) -> i32;
@@ -434,10 +436,17 @@ pub type ARKTimestepGetNumLinSolvSetups =
 pub type ARKTimestepGetCurrentGamma = fn(ark_mem: &mut ARKodeMem, gamma: &mut f64) -> i32;
 /// C fills pointers to the stepper's internal vectors (zpred, z, Fi,
 /// sdata) plus tcur/gamma/user_data; safe Rust cannot lend five
-/// aliased &muts — the concrete out-parameter shape is finalized when
-/// the arkstep GetNonlinearSystemData implementation lands.
-pub type ARKTimestepGetNonlinearSystemData =
-    fn(ark_mem: &mut ARKodeMem, tcur: &mut f64, gamma: &mut f64) -> i32;
+/// aliased &muts — the vector out-parameters receive CLONES instead
+/// (user_data omitted: it stays on ark_mem).
+pub type ARKTimestepGetNonlinearSystemData = fn(
+    ark_mem: &mut ARKodeMem,
+    tcur: &mut f64,
+    zpred: &mut NVector,
+    z: &mut NVector,
+    Fi: &mut NVector,
+    gamma: &mut f64,
+    sdata: &mut NVector,
+) -> i32;
 pub type ARKTimestepGetNumNonlinSolvIters = fn(ark_mem: &mut ARKodeMem, nniters: &mut i64) -> i32;
 pub type ARKTimestepGetNumNonlinSolvConvFails =
     fn(ark_mem: &mut ARKodeMem, nnfails: &mut i64) -> i32;

@@ -11,3 +11,7 @@ sundials_core = { path = "../sundials_core" }
 [[example]]
 name = "ark_analytic_nonlin"
 path = "examples/ark_analytic_nonlin.rs"
+
+[[example]]
+name = "ark_analytic"
+path = "examples/ark_analytic.rs"

@@ -16,10 +16,10 @@
 
 use crate::arkode_impl::{
     arkProcessError, ARKVecResizeFn, ARKodeMem, ARK_BAD_T, ARK_INTERP_MAX_DEGREE, ARK_MEM_FAIL,
-    ARK_MEM_NULL, ARK_SUCCESS, FUZZ_FACTOR, ZERO,
+    ARK_MEM_NULL, ARK_SUCCESS, FUZZ_FACTOR, HALF, ONE, TWO, ZERO,
 };
 use crate::arkode_interp::arkInterpEvaluate;
-use crate::nvector_serial::NVector;
+use crate::nvector_serial::{NVector, N_VLinearCombination};
 use crate::sundials_math::SUNRabs;
 use crate::sundials_types::UserData;
 use crate::sundials_utils::fmt_g;
@@ -1083,6 +1083,161 @@ pub fn arkHandleFailure(ark_mem: &mut ARKodeMem, flag: i32) -> i32 {
     arkProcessError(Some(ark_mem), flag, line!(), "arkHandleFailure", file!(), &msg);
 
     flag
+}
+
+/*---------------------------------------------------------------
+  arkPredict_MaximumOrder
+
+  This routine predicts the nonlinear implicit stage solution
+  using the ARKode interpolation module.  This uses the
+  highest-degree interpolant supported by the module (stored
+  in the interpolation module).
+  ---------------------------------------------------------------*/
+pub fn arkPredict_MaximumOrder(ark_mem: &mut ARKodeMem, tau: f64, yguess: &mut NVector) -> i32 {
+    /* verify that the interpolation structure is provided */
+    if ark_mem.interp.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "arkPredict_MaximumOrder",
+            file!(),
+            "ARKodeInterpMem structure is NULL",
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* call the interpolation module to do the work */
+    crate::arkode_interp::arkInterpEvaluate(ark_mem, tau, 0, ARK_INTERP_MAX_DEGREE, yguess)
+}
+
+/*---------------------------------------------------------------
+  arkPredict_VariableOrder
+
+  This routine predicts the nonlinear implicit stage solution
+  using the ARKODE interpolation module.  The degree of the
+  interpolant is based on the level of extrapolation outside the
+  preceding time step.
+  ---------------------------------------------------------------*/
+pub fn arkPredict_VariableOrder(ark_mem: &mut ARKodeMem, tau: f64, yguess: &mut NVector) -> i32 {
+    let tau_tol: f64 = HALF;
+    let tau_tol2: f64 = 0.75;
+
+    /* verify that the interpolation structure is provided */
+    if ark_mem.interp.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "arkPredict_VariableOrder",
+            file!(),
+            "ARKodeInterpMem structure is NULL",
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* set the polynomial order based on tau input */
+    let ord = if tau <= tau_tol {
+        3
+    } else if tau <= tau_tol2 {
+        2
+    } else {
+        1
+    };
+
+    /* call the interpolation module to do the work */
+    crate::arkode_interp::arkInterpEvaluate(ark_mem, tau, 0, ord, yguess)
+}
+
+/*---------------------------------------------------------------
+  arkPredict_CutoffOrder
+
+  This routine predicts the nonlinear implicit stage solution
+  using the ARKODE interpolation module.  If the level of
+  extrapolation is small enough, it uses the maximum degree
+  polynomial available (stored in the interpolation module
+  structure); otherwise it uses a linear polynomial.
+  ---------------------------------------------------------------*/
+pub fn arkPredict_CutoffOrder(ark_mem: &mut ARKodeMem, tau: f64, yguess: &mut NVector) -> i32 {
+    let tau_tol: f64 = HALF;
+
+    /* verify that the interpolation structure is provided */
+    if ark_mem.interp.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "arkPredict_CutoffOrder",
+            file!(),
+            "ARKodeInterpMem structure is NULL",
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* set the polynomial order based on tau input */
+    let ord = if tau <= tau_tol { ARK_INTERP_MAX_DEGREE } else { 1 };
+
+    /* call the interpolation module to do the work */
+    crate::arkode_interp::arkInterpEvaluate(ark_mem, tau, 0, ord, yguess)
+}
+
+/*---------------------------------------------------------------
+  arkPredict_Bootstrap
+
+  This routine predicts the nonlinear implicit stage solution
+  using a quadratic Hermite interpolating polynomial, based on
+  the data {y_n, f(t_n,y_n), f(t_n+hj,z_j)}.
+
+  Note: we assume that ftemp = f(t_n+hj,z_j) can be computed via
+     N_VLinearCombination(nvec, cvals, Xvecs, ftemp),
+  i.e. the inputs cvals[0:nvec-1] and Xvecs[0:nvec-1] may be
+  combined to form f(t_n+hj,z_j).  Here the operand list arrives
+  as owned coefficient/vector-reference slices assembled by the
+  caller (Xvecs replaced by call-site assembly, Addendum C).
+  ---------------------------------------------------------------*/
+pub fn arkPredict_Bootstrap(
+    ark_mem: &mut ARKodeMem,
+    hj: f64,
+    tau: f64,
+    nvec: usize,
+    cvals: &[f64],
+    xvecs: &[&NVector],
+    yguess: &mut NVector,
+) -> i32 {
+    /* verify that the interpolation structure is provided */
+    if ark_mem.interp.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "arkPredict_Bootstrap",
+            file!(),
+            "ARKodeInterpMem structure is NULL",
+        );
+        return ARK_MEM_NULL;
+    }
+
+    /* set coefficients for Hermite interpolant */
+    let a0 = ONE;
+    let a2 = tau * tau / TWO / hj;
+    let a1 = tau - a2;
+
+    /* set arrays for fused vector operation; shift inputs for
+       f(t_n+hj,z_j) to end of queue */
+    let mut cv: Vec<f64> = Vec::with_capacity(nvec + 2);
+    let mut xr: Vec<&NVector> = Vec::with_capacity(nvec + 2);
+    cv.push(a0);
+    xr.push(&ark_mem.yn);
+    cv.push(a1);
+    xr.push(&ark_mem.fn_);
+    for i in 0..nvec {
+        cv.push(a2 * cvals[i]);
+        xr.push(xvecs[i]);
+    }
+
+    /* call fused vector operation to compute prediction */
+    N_VLinearCombination((nvec + 2) as i32, &cv, &xr, yguess);
+    ARK_SUCCESS
 }
 
 /*---------------------------------------------------------------

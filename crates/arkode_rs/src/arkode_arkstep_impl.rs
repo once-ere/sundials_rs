@@ -113,6 +113,17 @@ pub const MSG_ARK_MISSING_FI: &str =
 pub const MSG_ARK_MISSING_F: &str =
     "Cannot specify that method is ImEx without providing function pointers to fi(t,y) and fe(t,y).";
 
+/// Which vector C's `step_mem->fn_implicit` alias points at
+/// (NULL / Fi[0] / ark_mem->tempv5 / ark_mem->fn).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum FnImplicitAlias {
+    #[default]
+    None,
+    Fi0,
+    Tempv5,
+    ArkFn,
+}
+
 /// struct ARKodeARKStepMemRec (arkode_arkstep_impl.h)
 pub struct ARKodeARKStepMem {
     /* ARK problem specification */
@@ -173,8 +184,10 @@ pub struct ARKodeARKStepMem {
 
     pub convfail: i32, /* NLS fail flag (for interface routines)   */
     pub jcur: bool,    /* is Jacobian info for lin solver current? */
-    /* (fn_implicit: alias to a saved implicit RHS evaluation —
-       re-derived at the arkode_arkstep_nls.rs use sites) */
+    /* C: `N_Vector fn_implicit` — an ALIAS to a saved implicit RHS
+       evaluation (Fi[0], tempv5, or ark_mem->fn); safe Rust stores
+       which vector it aliases and re-derives at the use sites. */
+    pub fn_implicit: FnImplicitAlias,
 
     /* Linear Solver Data (the lmem box itself lives on
        ARKodeMem.lmem — Addendum C.1) */
@@ -208,4 +221,79 @@ pub struct ARKodeARKStepMem {
     pub nforcing: i32,          /* number of forcing vectors   */
     pub stage_times: Vec<f64>,  /* workspace for applying forcing */
     pub stage_coefs: Vec<f64>,  /* workspace for applying forcing */
+}
+
+/* C ARKStepCreate memset(step_mem, 0, ...) equivalence; also used for
+   the throwaway box swapped in while step_mem is temporarily
+   re-installed into ark_mem around lsetup/lsolve op re-entries
+   (arkode_arkstep_nls.rs).  lsolve_type: C initializes to -1
+   ("none"); the Rust enum placeholder is DIRECT until a linear
+   solver is attached. */
+impl Default for ARKodeARKStepMem {
+    fn default() -> Self {
+        ARKodeARKStepMem {
+            fe: None,
+            fi: None,
+            autonomous: false,
+            linear: false,
+            linear_timedep: false,
+            explicit: false,
+            implicit: false,
+            deduce_rhs: false,
+            Fe: Vec::new(),
+            Fi: Vec::new(),
+            z: Vec::new(),
+            sdata: NVector::new(0),
+            zpred: NVector::new(0),
+            zcor: NVector::new(0),
+            q: 0,
+            p: 0,
+            istage: 0,
+            stages: 0,
+            Be: None,
+            Bi: None,
+            stage_predict: None,
+            NLS: None,
+            ownNLS: false,
+            nls_fi: None,
+            gamma: 0.0,
+            gammap: 0.0,
+            gamrat: 0.0,
+            dgmax: 0.0,
+            predictor: 0,
+            crdown: 0.0,
+            rdiv: 0.0,
+            crate_: 0.0,
+            delp: 0.0,
+            eRNrm: 0.0,
+            nlscoef: 0.0,
+            msbp: 0,
+            nstlp: 0,
+            maxcor: 0,
+            convfail: 0,
+            jcur: false,
+            fn_implicit: FnImplicitAlias::None,
+            linit: None,
+            lsetup: None,
+            lsolve: None,
+            lfree: None,
+            lsolve_type: crate::sundials_linearsolver::SUNLINEARSOLVER_DIRECT,
+            mass_type: MASS_IDENTITY,
+            nfe: 0,
+            nfi: 0,
+            nsetups: 0,
+            nls_iters: 0,
+            nls_fails: 0,
+            cvals: Vec::new(),
+            nfusedopvecs: 0,
+            expforcing: false,
+            impforcing: false,
+            tshift: 0.0,
+            tscale: 0.0,
+            forcing: Vec::new(),
+            nforcing: 0,
+            stage_times: Vec::new(),
+            stage_coefs: Vec::new(),
+        }
+    }
 }
