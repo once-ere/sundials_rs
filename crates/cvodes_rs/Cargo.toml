@@ -91,3 +91,7 @@ path = "examples/cvsAdvDiff_ASAi_bnd.rs"
 [[example]]
 name = "cvsRoberts_ASAi_dns"
 path = "examples/cvsRoberts_ASAi_dns.rs"
+
+[[example]]
+name = "cvsRoberts_ASAi_dns_constraints"
+path = "examples/cvsRoberts_ASAi_dns_constraints.rs"
