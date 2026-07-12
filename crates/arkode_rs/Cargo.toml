@@ -109,6 +109,10 @@ name = "ark_onewaycouple_mri"
 path = "examples/ark_onewaycouple_mri.rs"
 
 [[example]]
+name = "ark_twowaycouple_mri"
+path = "examples/ark_twowaycouple_mri.rs"
+
+[[example]]
 name = "ark_reaction_diffusion_mri"
 path = "examples/ark_reaction_diffusion_mri.rs"
 

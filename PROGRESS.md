@@ -84,16 +84,16 @@ cvsRoberts_klu, cvsRoberts_sps, cvsRoberts_ASAi_klu, cvsRoberts_ASAi_sps,
 cvsRoberts_FSA_klu, cvsRoberts_FSA_sps (KLU/SuperLU)
 
 ## crates/kinsol_rs — Phase 3
-- [x] kinsol_impl.h — ported (kinsol_impl.rs: KINMem, kinsol.h constants/typedefs, KINProcessError; uncommitted)
+- [x] kinsol_impl.h — committed (kinsol_impl.rs: KINMem, kinsol.h constants/typedefs, KINProcessError)
 - [x] kinsol.c — committed
 - [x] kinsol_io.c — committed
-- [x] kinsol_ls_impl.h — ported (kinsol_ls_impl.rs: KINLsMem, kinsol_ls.h types/codes; uncommitted)
+- [x] kinsol_ls_impl.h — committed (kinsol_ls_impl.rs: KINLsMem, kinsol_ls.h types/codes)
 - [x] kinsol_ls.c — committed
 - [x] kinsol_aa.c — committed
 - [x] kinsol_orth.c — committed
-- [x] kinsol_bbdpre_impl.h — ported (kinsol_bbdpre_impl.rs: KBBDPrecData, KINBBDLocalFn/KINBBDCommFn; uncommitted)
-- [x] kinsol_bbdpre.c — ported (kinsol_bbdpre.rs; PrecModule::BBDPre variant + kinLsPSetup/psolve/setup_disabled dispatch in kinsol_ls(_impl).rs; uncommitted)
-- [x] kinsol_cli.c — ported (kinsol_cli.rs over sundials_core::sundials_cli generics; uncommitted)
+- [x] kinsol_bbdpre_impl.h — committed (kinsol_bbdpre_impl.rs: KBBDPrecData, KINBBDLocalFn/KINBBDCommFn)
+- [x] kinsol_bbdpre.c — committed (kinsol_bbdpre.rs; PrecModule::BBDPre variant + kinLsPSetup/psolve/setup_disabled dispatch in kinsol_ls(_impl).rs)
+- [x] kinsol_cli.c — committed (kinsol_cli.rs over sundials_core::sundials_cli generics)
 ### excluded (kinsol) examples
 kinFerTron_klu (KLU), kinRoboKin_slu (SuperLU)
 
@@ -708,8 +708,9 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       the idas.c driver + idas_nls + idas_ls + rootfinding end to end.
       lib.rs prelude gained the sunnonlinsol_newton/fixedpoint
       re-exports the examples need, matching ida_rs.)
-- [ ] idasAnalytic_mels — todo (donor idaAnalytic_mels.rs; IDAS adds
-      reltol/abstol header lines + IDAGetActualInitStep h0 output)
+- [x] idasAnalytic_mels — IDENTICAL (donor idaAnalytic_mels.rs; IDAS
+      reltol/abstol header lines + IDAGetActualInitStep h0 output;
+      idas.init_step 1e-5 CLI variant also IDENTICAL)
 - [x] idasHeat2D_bnd — IDENTICAL (donor + header-indent deltas)
 - [x] idasHeat2D_kry — IDENTICAL (donor + header-indent deltas)
 - [x] idasFoodWeb_bnd — LOCAL-C (byte-identical to the local C build;
@@ -718,7 +719,6 @@ idaHeat2D_klu, idaRoberts_klu, idaRoberts_sps (KLU/SuperLU)
       reference tree was REBUILT 2026-07-11 and now lives COMMITTED at
       localref/ — verify_examples.sh defaults to it.)
 - [x] idasKrylovDemo_ls — IDENTICAL (donor + header-indent deltas)
-- [ ] idasSlCrank_dns — todo (donor idaSlCrank_dns.rs)
 - [x] idasSlCrank_dns — last-digit (first quadrature-carrying example:
       IDAQuadInit + IDAQuadSStolerances + IDASetQuadErrCon + IDAGetQuad
       all exercised; 44/45 output lines byte-identical to local C; the
@@ -850,7 +850,13 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_sunstepper.c — committed (ARKodeCreateSUNStepper wraps a Box<ARKodeMem> as owned SUNStepper content; evolve/onestep/fullrhs/reset/stoptime/stepdirection/setforcing/getnumsteps ops; ResetCheckpointIndex skipped with the adjoint; arkStep_SetInnerForcing/ApplyForcing ported into arkode_arkstep.rs (StageSetup/ComputeSolutions/FullRHS forcing appends) so ARKStep-backed steppers support forcing)
 - [x] arkode_cli.c — committed (ARKodeSetOptions + arkSetFromCommandLine over the sundials_cli generics; int/long/real/two-real/action key tables, interpolant_type / accumulated_error_type / write_parameters special keys, stepper step_setoptions dispatch; C's sunbooleantype entries in the int table go through nonzero->bool cli_* shims. Stepper hooks arkStep/erkStep/sprkStep/lsrkStep_SetOptions ported into the respective _io modules and installed at create (splittingstep/mristep already had theirs))
 ### excluded (arkode)
-xbraid/ (XBraid); fmod_* (Fortran)
+xbraid/ (XBraid); fmod_* (Fortran); ark_lotka_volterra_ASA (structural:
+the SUNAdjointStepper path needs arkStep/erkStep TakeStep_*_Adjoint +
+CreateAdjointStepper, whose adjoint state is an NVector MANYVECTOR
+composite — a workspace-wide NVector-representation change; the serial
+NVector is pinned as a plain data vector (ARCHITECTURE.md), so these
+halves stay unported. CVODES adjoint (cvodea) covers ASA end-to-end
+instead — see cvsLotkaVolterra_ASA, the same problem, verified LOCAL-C.)
 
 ## Phase 7 — docs
 - [ ] sundials.md — todo

@@ -22,3 +22,7 @@ ark_reaction_diffusion_mri_slow_stats.csv
 ark_reaction_diffusion_mri_fast_stats.csv
 ark_kpr_mri_solution.txt
 cvsRoberts_FSA_dns_stats*.csv
+cvsPendulum_dns_ref.txt
+cvsPendulum_dns_rtol_*.txt
+cvsRoberts_ASAi_dns_*_stats.csv
+ark_twowaycouple_mri_solution.txt

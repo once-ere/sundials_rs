@@ -54,23 +54,23 @@ regenerate other solvers there if a new local-C comparison is needed).
 | cvsDiurnal_kry | local-C(byte-identical to local C build; shipped .out foreign-libm — same signature as cvDiurnal_kry; lenrw/leniw are the larger CVODES values) |
 | cvsDiurnal_kry_bp | local-C(byte-identical to local C build; shipped .out foreign-libm) |
 | cvsDirectDemo_ls | local-C(byte-identical to local C build incl. the cvs-only second table header; shipped .out foreign-libm) |
-| cvsKrylovDemo_ls | local-C(byte-identical to local C build; shipped .out foreign-libm) |
+| cvsKrylovDemo_ls | local-C x4 (base + 1, 2, 0 1 arg variants byte-identical to local C build; shipped .outs foreign-libm. The 0 1 run exposed+fixed an invented monitor-gating of per-output printing in the donor port — C prints every output time, monitor only redirects SUNLogger info) |
 | cvsKrylovDemo_prec | identical (CVODES banner text) |
-| cvsAnalytic_mels | identical |
+| cvsAnalytic_mels | identical x2 (plain + cvodes.max_order 3 CLI variant via CVodeSetOptions) |
 | cvsParticle_dns | local-C(byte-identical to local C -ffp-contract=off build; same 100-orbit chaotic amplification as the cvode donor) |
 | cvsPendulum_dns | local-C(byte-identical to local C build; shipped .out stale one-digit atol exponent as in cvPendulum_dns) |
-| cvsAdvDiff_FSA_non | todo |
-| cvsDiurnal_FSA_kry | todo |
-| cvsRoberts_FSA_dns | todo |
-| cvsRoberts_FSA_dns_Switch | todo |
-| cvsRoberts_FSA_dns_constraints | todo |
-| cvsAdvDiff_ASAi_bnd | todo |
-| cvsFoodWeb_ASAi_kry | todo |
-| cvsFoodWeb_ASAp_kry | todo |
-| cvsHessian_ASA_FSA | todo |
-| cvsLotkaVolterra_ASA | todo |
-| cvsRoberts_ASAi_dns | todo |
-| cvsRoberts_ASAi_dns_constraints | todo |
+| cvsAdvDiff_FSA_non | identical x2 (sim_t + stg_t shipped refs; first internal-DQ FSA example — fS=NULL through the pinned FSAUserData convention (ARCHITECTURE.md §3.6), CV_CENTERED DQ, FixedPoint + FixedPointSens nonlinear solvers) |
+| cvsDiurnal_FSA_kry | LOCAL-C x2 (sim_t + stg_t byte-identical to local C build; shipped refs stale step-count drift. Internal-DQ FSA over the 15x15 diurnal PDE with SPGMR + block-diagonal preconditioner; DiurnalData payload behind FSAUserData.user) |
+| cvsRoberts_FSA_dns | identical (sim_t shipped ref) + LOCAL-C (stg1_t byte-identical to local C; shipped ref stale). User fS via CVodeSensInit1, CVodeSensEEtolerances, WFtolerances ewt, PrintAllStats TABLE + CSV |
+| cvsRoberts_FSA_dns_Switch | identical (five sequential runs: SensToggleOff, SensFree+SensInit1 re-init with user fS and internal DQ, CV_STAGGERED partial err con; parameter switches mirror C data->p/cv_p aliasing by updating FSAUserData.p and cv_p together) |
+| cvsRoberts_FSA_dns_constraints | identical (stg1_t shipped ref; CVodeSetConstraints + left-justified stats block incl. CVodeGetNumStepSolveFails/CVodeGetNumStepSensSolveFails) |
+| cvsAdvDiff_ASAi_bnd | identical (first adjoint example: CVodeAdjInit/CVodeF CV_HERMITE checkpoints, CVodeCreateB/InitB/SetLinearSolverB/SetJacFnB band JB=-J^T, CVodeB/GetB) |
+| cvsFoodWeb_ASAi_kry | identical (GS+block-grouping product preconditioner both directions, Simpson quadrature state NEQ+1. Two pinned patterns: efun error-weight snapshots (backward efun installed on the B CVodeMem via CVodeGetAdjCVodeBmem) and ONE WebData shared by both problems via Rc<RefCell> — the C sharing is load-bearing: replay f calls interleave with fB/PrecondB on the same fsave/P blocks; separate copies reproduce a diverging backward trajectory bit-for-bit) |
+| cvsFoodWeb_ASAp_kry | identical (pointwise-final-time variant: no quadrature state, CbInit terminal condition, NSTEPS=80, shared GS temp; same shared-WebData/efun-snapshot patterns) |
+| cvsHessian_ASA_FSA | identical (2nd-order adjoint: CVodeSensInit simultaneous + QuadSensInit forward, two CVodeInitBS/QuadInitBS backward problems over CV_POLYNOMIAL checkpoints, FD validation runs mutating p through solver-owned user data) |
+| cvsLotkaVolterra_ASA | LOCAL-C (byte-identical to local C build; shipped ref stale in backward-solution digits. SPGMR no-prec adjoint + quadrature dg/dp; adds N_VPrint to sundials_core; aliased N_VScale sites via scale_inplace) |
+| cvsRoberts_ASAi_dns | identical (forward quadrature G + backward fQB quadratures for dG/dp; two backward phases tB0=4e7 then ReInitB/QuadReInitB tB0=50 with CVodeGetAdjY interpolation and per-phase PrintAllStats via CVodeGetAdjCVodeBmem) |
+| cvsRoberts_ASAi_dns_constraints | identical (constraints on both forward and backward problems via CVodeSetConstraints/CVodeSetConstraintsB) |
 | cvsRoberts_klu / _sps / _ASAi_klu / _ASAi_sps / _FSA_klu / _FSA_sps | excluded(KLU/SuperLU) |
 
 ## kinsol_rs (Phase 3)
@@ -176,10 +176,10 @@ error-path checks.
 | ark_heat1D_adapt | IDENTICAL (shipped ref; the ARKodeResize stress test — 65 mesh adaptations each re-projecting the solution, resizing every core/stepper vector, recreating the owned Newton NLS and reattaching a fresh PCG solver; also exercises the deprecated ARKStepSetAdaptivityMethod (I controller) — verified byte-exact on first run) |
 | ark_kepler | 1 IDENTICAL + 12 LOCAL-C (all 13 arg variants byte-match a freshly built 7.7.0 C binary; shipped .out files predate the SUN_TABLE_WIDTH 28->29 change; covers SPRK standard + compensated-sum steps, 9 SPRK tables, SPRK rootfinding, explicit ARKStep ERK fixed/adaptive, tstop, check-order) |
 | ark_kpr_mri | 11 IDENTICAL + 4 LOCAL-C (all 15 reference variants pass — slow_types 0-13 x fast_types 0-5 combos: MIS_KW3/MRI_GARK_ERK45a/MERK21-54/IRK21a/ESDIRK34a/IMEX_MRI_GARK3b+4/IMEX_MRI_SR21-43 couplings over none/esdirk33/HEUN_EULER/erk33/erk44/DORMAND_PRINCE inners, incl. the deduce_rhs=1 variants and the inner/outer arkid-prefixed ARKodeSetOptions hooks. The 4 LOCAL-C variants are byte-identical to a fresh 7.7.0 C build; shipped refs differ only at 1e-13-scale libm ulps in the printed error columns) |
-| ark_lotka_volterra_ASA | todo |
+| ark_lotka_volterra_ASA | excluded(structural: needs the arkstep/erkstep adjoint TakeStep halves whose state is an NVector ManyVector composite — see PROGRESS.md excluded (arkode). The same Lotka-Volterra ASA problem is verified through CVODES as cvsLotkaVolterra_ASA) |
 | ark_onewaycouple_mri | IDENTICAL (shipped ref; explicit MIS slow over KNOTH_WOLKE_3_3 fast on the 3-component one-way-coupled system with analytic max-error output; aliased error N_VLinearSum via linear_sum_with — verified byte-exact on first run) |
 | ark_reaction_diffusion_mri | LOCAL-C (stdout AND both PrintAllStats CSV files byte-identical to a fresh 7.7.0 C build; shipped ref stale SUN_TABLE_WIDTH 28 vs 29 — all numeric values identical. 1001-point reaction-diffusion, explicit MIS/KW3 with 153051 fast steps; exercises slow+fast ARKodePrintAllStats TABLE/CSV incl. the borrowed inner integrator) |
 | ark_robertson | IDENTICAL (shipped ref; stiff DIRK + arkPredict_MaximumOrder (predictor 1) + full ARKodePrintAllStats TABLE output to stdout, verified byte-exact) |
 | ark_robertson_constraints | IDENTICAL (shipped ref; exercises ARKodeSetConstraints + the arkCheckConstraints path and ARKodeGetNumConstrFails, verified byte-exact on first run) |
 | ark_robertson_root | IDENTICAL (shipped ref; exercises ARKodeRootInit/GetRootInfo end-to-end — Illinois rootfinder, SVtolerances, arkHin auto initial step — verified byte-exact) |
-| ark_twowaycouple_mri | todo |
+| ark_twowaycouple_mri | identical (MIS/KW3 MRI with two-way slow/fast coupling; same borrowed-inner stats idiom as ark_onewaycouple_mri) |
