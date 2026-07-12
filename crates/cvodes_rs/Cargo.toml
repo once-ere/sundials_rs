@@ -79,3 +79,7 @@ path = "examples/cvsRoberts_FSA_dns_Switch.rs"
 [[example]]
 name = "cvsRoberts_FSA_dns_constraints"
 path = "examples/cvsRoberts_FSA_dns_constraints.rs"
+
+[[example]]
+name = "cvsDiurnal_FSA_kry"
+path = "examples/cvsDiurnal_FSA_kry.rs"
