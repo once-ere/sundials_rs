@@ -45,20 +45,20 @@ regenerate other solvers there if a new local-C comparison is needed).
 
 | example | status |
 |---|---|
-| cvsRoberts_dns | todo |
-| cvsRoberts_dnsL | todo |
-| cvsRoberts_dns_uw | todo |
-| cvsRoberts_dns_constraints | todo |
-| cvsAdvDiff_bnd | todo |
-| cvsAdvDiff_bndL | todo |
-| cvsDiurnal_kry | todo |
-| cvsDiurnal_kry_bp | todo |
-| cvsDirectDemo_ls | todo |
-| cvsKrylovDemo_ls | todo |
-| cvsKrylovDemo_prec | todo |
-| cvsAnalytic_mels | todo |
-| cvsParticle_dns | todo |
-| cvsPendulum_dns | todo |
+| cvsRoberts_dns | identical |
+| cvsRoberts_dnsL | exception(stale-format shipped ref unproducible by current C source — 7-space/wide columns vs the source's 6-space %14.6e — atop the donor-documented LAPACK-vs-native-LU last-digit; whitespace-insensitive diff shows only two 7th-digit values) |
+| cvsRoberts_dns_uw | identical |
+| cvsRoberts_dns_constraints | identical |
+| cvsAdvDiff_bnd | identical (incl. the cvs-only trailing ' ' stats line) |
+| cvsAdvDiff_bndL | identical (cvs-specific print spacings applied; native band LS vs C LAPACK band as in the cvode donor) |
+| cvsDiurnal_kry | local-C(byte-identical to local C build; shipped .out foreign-libm — same signature as cvDiurnal_kry; lenrw/leniw are the larger CVODES values) |
+| cvsDiurnal_kry_bp | local-C(byte-identical to local C build; shipped .out foreign-libm) |
+| cvsDirectDemo_ls | local-C(byte-identical to local C build incl. the cvs-only second table header; shipped .out foreign-libm) |
+| cvsKrylovDemo_ls | local-C(byte-identical to local C build; shipped .out foreign-libm) |
+| cvsKrylovDemo_prec | identical (CVODES banner text) |
+| cvsAnalytic_mels | identical |
+| cvsParticle_dns | local-C(byte-identical to local C -ffp-contract=off build; same 100-orbit chaotic amplification as the cvode donor) |
+| cvsPendulum_dns | local-C(byte-identical to local C build; shipped .out stale one-digit atol exponent as in cvPendulum_dns) |
 | cvsAdvDiff_FSA_non | todo |
 | cvsDiurnal_FSA_kry | todo |
 | cvsRoberts_FSA_dns | todo |

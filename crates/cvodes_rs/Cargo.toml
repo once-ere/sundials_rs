@@ -7,3 +7,59 @@ description = "Pure-Rust, memory-safe translation of cvodes v7.7.0 (SUNDIALS) â€
 
 [dependencies]
 sundials_core = { path = "../sundials_core" }
+
+[[example]]
+name = "cvsRoberts_dns"
+path = "examples/cvsRoberts_dns.rs"
+
+[[example]]
+name = "cvsRoberts_dnsL"
+path = "examples/cvsRoberts_dnsL.rs"
+
+[[example]]
+name = "cvsRoberts_dns_uw"
+path = "examples/cvsRoberts_dns_uw.rs"
+
+[[example]]
+name = "cvsRoberts_dns_constraints"
+path = "examples/cvsRoberts_dns_constraints.rs"
+
+[[example]]
+name = "cvsAdvDiff_bnd"
+path = "examples/cvsAdvDiff_bnd.rs"
+
+[[example]]
+name = "cvsAdvDiff_bndL"
+path = "examples/cvsAdvDiff_bndL.rs"
+
+[[example]]
+name = "cvsDiurnal_kry"
+path = "examples/cvsDiurnal_kry.rs"
+
+[[example]]
+name = "cvsDiurnal_kry_bp"
+path = "examples/cvsDiurnal_kry_bp.rs"
+
+[[example]]
+name = "cvsDirectDemo_ls"
+path = "examples/cvsDirectDemo_ls.rs"
+
+[[example]]
+name = "cvsKrylovDemo_ls"
+path = "examples/cvsKrylovDemo_ls.rs"
+
+[[example]]
+name = "cvsKrylovDemo_prec"
+path = "examples/cvsKrylovDemo_prec.rs"
+
+[[example]]
+name = "cvsAnalytic_mels"
+path = "examples/cvsAnalytic_mels.rs"
+
+[[example]]
+name = "cvsParticle_dns"
+path = "examples/cvsParticle_dns.rs"
+
+[[example]]
+name = "cvsPendulum_dns"
+path = "examples/cvsPendulum_dns.rs"
