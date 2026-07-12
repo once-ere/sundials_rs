@@ -2307,3 +2307,76 @@ pub(crate) fn arkStep_ComputeSolutions(
 
     ARK_SUCCESS
 }
+
+/*===============================================================
+  Tests
+  ===============================================================*/
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arkode::{ARKodeEvolve, ARKodeSStolerances};
+    use crate::arkode_arkstep_io::{ARKStepSetTableName, ARKStepSetTables};
+    use crate::arkode_butcher_dirk::ARKodeButcherTable_LoadDIRK;
+    use crate::sundials_context::SUNContext_Create;
+
+    /* dy/dt = lambda*(y - atan(t)) + 1/(1+t^2), y(0)=0, y(t)=atan(t) */
+    fn fi_stiff(t: f64, y: &NVector, ydot: &mut NVector, _ud: &mut UserData) -> i32 {
+        let lambda = -10.0;
+        ydot.data[0] = lambda * (y.data[0] - t.atan()) + 1.0 / (1.0 + t * t);
+        0
+    }
+
+    /* ARKStepSetTableName with an implicit-only selection replaces the
+       default DIRK table; the integration then uses the requested
+       method (checked via the stored q/p and a short solve). */
+    #[test]
+    fn arkstep_set_table_name_dirk() {
+        let ctx = SUNContext_Create();
+        let mut y = NVector::new(1);
+        y.data[0] = 0.0;
+        let mut ark = ARKStepCreate(None, Some(fi_stiff), 0.0, &y, &ctx).unwrap();
+        assert_eq!(ARKodeSStolerances(&mut ark, 1.0e-4, 1.0e-8), ARK_SUCCESS);
+
+        let flag = ARKStepSetTableName(&mut ark, "ARKODE_SDIRK_2_1_2", "ARKODE_ERK_NONE");
+        assert_eq!(flag, ARK_SUCCESS);
+        {
+            let sm = arkStep_AccessStepMem(&mut ark, "test").unwrap();
+            assert_eq!((sm.q, sm.p, sm.stages), (2, 1, 2));
+            assert!(sm.implicit && !sm.explicit);
+            ark.step_mem = Some(sm);
+        }
+
+        /* attach dense linear solver and integrate to t=1 */
+        let a = crate::sunmatrix_dense::SUNDenseMatrix(1, 1, &ctx);
+        let ls = crate::sunlinsol_dense::SUNLinSol_Dense(&y, &a, &ctx);
+        assert_eq!(
+            crate::arkode_ls::ARKodeSetLinearSolver(&mut ark, ls, Some(a)),
+            crate::arkode_ls_impl::ARKLS_SUCCESS
+        );
+        let mut t = 0.0;
+        let flag = ARKodeEvolve(&mut ark, 1.0, &mut y, &mut t, ARK_NORMAL);
+        assert!(flag >= 0, "ARKodeEvolve flag = {}", flag);
+        assert!(SUNRabs(y.data[0] - 1.0f64.atan()) < 1.0e-3);
+    }
+
+    /* ARKStepSetTables (implicit-only) copies a user table into step
+       memory and switches to purely implicit mode. */
+    #[test]
+    fn arkstep_set_tables_copy() {
+        let ctx = SUNContext_Create();
+        let mut y = NVector::new(1);
+        y.data[0] = 0.0;
+        let mut ark = ARKStepCreate(None, Some(fi_stiff), 0.0, &y, &ctx).unwrap();
+
+        let bi = ARKodeButcherTable_LoadDIRK(
+            crate::arkode_butcher_dirk::ARKODE_BACKWARD_EULER_1_1,
+        )
+        .unwrap();
+        let flag = ARKStepSetTables(&mut ark, 1, 0, Some(&bi), None);
+        assert_eq!(flag, ARK_SUCCESS);
+        let sm = arkStep_AccessStepMem(&mut ark, "test").unwrap();
+        assert_eq!((sm.q, sm.stages), (1, 1));
+        assert!(sm.Bi.is_some() && sm.Be.is_none());
+        ark.step_mem = Some(sm);
+    }
+}

@@ -838,3 +838,75 @@ pub fn ARKodeWriteParameters(ark_mem: &mut ARKodeMem, fp: &mut dyn std::io::Writ
 
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKodeSetInterpolantType:
+
+  Specifies the interpolation module (Hermite / Lagrange / none)
+  to use for dense output and predictors.  May not be called after
+  module initialization.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetInterpolantType(ark_mem: &mut ARKodeMem, itype: i32) -> i32 {
+    use crate::arkode_impl::{
+        ARK_ILL_INPUT, ARK_INTERP_FAIL, ARK_INTERP_HERMITE, ARK_INTERP_LAGRANGE, ARK_INTERP_NONE,
+    };
+    use crate::arkode_interp::{arkInterpCreate_Hermite, arkInterpCreate_Lagrange, arkInterpFree};
+
+    /* check for legal itype input */
+    if itype != ARK_INTERP_HERMITE && itype != ARK_INTERP_LAGRANGE && itype != ARK_INTERP_NONE {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKodeSetInterpolantType",
+            file!(),
+            "Illegal interpolation type input.",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* do not change type once the module has been initialized */
+    if ark_mem.initialized {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_INTERP_FAIL,
+            line!(),
+            "ARKodeSetInterpolantType",
+            file!(),
+            "Type cannot be specified after module initialization.",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* delete any existing interpolation module */
+    if ark_mem.interp.is_some() {
+        arkInterpFree(ark_mem);
+    }
+
+    /* create requested interpolation module, initially specifying
+       the maximum possible interpolant degree (the C NULL-return
+       allocation-failure paths cannot occur). */
+    if itype == ARK_INTERP_HERMITE {
+        ark_mem.interp = arkInterpCreate_Hermite(ark_mem, ark_mem.interp_degree);
+        ark_mem.interp_type = ARK_INTERP_HERMITE;
+    } else if itype == ARK_INTERP_LAGRANGE {
+        ark_mem.interp = arkInterpCreate_Lagrange(ark_mem, ark_mem.interp_degree);
+        ark_mem.interp_type = ARK_INTERP_LAGRANGE;
+    } else {
+        ark_mem.interp = None;
+        ark_mem.interp_type = ARK_INTERP_NONE;
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetNumStepSolveFails:
+
+  Returns the current number of failed steps due to an algebraic
+  solver convergence failure.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetNumStepSolveFails(ark_mem: &mut ARKodeMem, nncfails: &mut i64) -> i32 {
+    *nncfails = ark_mem.ncfn;
+    ARK_SUCCESS
+}

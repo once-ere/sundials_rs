@@ -920,3 +920,585 @@ pub fn arkStep_WriteParameters(ark_mem: &mut ARKodeMem, fp: &mut dyn std::io::Wr
     ark_mem.step_mem = Some(step_mem);
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKStepSetExplicit:
+
+  Specifies that the implicit portion of the problem is disabled,
+  and to use an explicit RK method.
+  ---------------------------------------------------------------*/
+pub fn ARKStepSetExplicit(ark_mem: &mut ARKodeMem) -> i32 {
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "ARKStepSetExplicit") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    /* ensure that fe is defined */
+    if step_mem.fe.is_none() {
+        ark_mem.step_mem = Some(step_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKStepSetExplicit",
+            file!(),
+            MSG_ARK_MISSING_FE,
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* set the relevant parameters */
+    step_mem.explicit = SUNTRUE;
+    step_mem.implicit = SUNFALSE;
+
+    ark_mem.step_mem = Some(step_mem);
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKStepSetImplicit:
+
+  Specifies that the explicit portion of the problem is disabled,
+  and to use an implicit RK method.
+  ---------------------------------------------------------------*/
+pub fn ARKStepSetImplicit(ark_mem: &mut ARKodeMem) -> i32 {
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "ARKStepSetImplicit") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    /* ensure that fi is defined */
+    if step_mem.fi.is_none() {
+        ark_mem.step_mem = Some(step_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKStepSetImplicit",
+            file!(),
+            MSG_ARK_MISSING_FI,
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* set the relevant parameters */
+    step_mem.implicit = SUNTRUE;
+    step_mem.explicit = SUNFALSE;
+
+    ark_mem.step_mem = Some(step_mem);
+
+    /* re-attach internal error weight functions if necessary */
+    ark_reattach_tolerances(ark_mem)
+}
+
+/*---------------------------------------------------------------
+  ARKStepSetImEx:
+
+  Specifies that the specifies that problem has both implicit and
+  explicit parts, and to use an ARK method (this is the default).
+  ---------------------------------------------------------------*/
+pub fn ARKStepSetImEx(ark_mem: &mut ARKodeMem) -> i32 {
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "ARKStepSetImEx") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    /* ensure that fe and fi are defined */
+    if step_mem.fe.is_none() {
+        ark_mem.step_mem = Some(step_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKStepSetImEx",
+            file!(),
+            MSG_ARK_MISSING_FE,
+        );
+        return ARK_ILL_INPUT;
+    }
+    if step_mem.fi.is_none() {
+        ark_mem.step_mem = Some(step_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "ARKStepSetImEx",
+            file!(),
+            MSG_ARK_MISSING_FI,
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* set the relevant parameters */
+    step_mem.explicit = SUNTRUE;
+    step_mem.implicit = SUNTRUE;
+
+    ark_mem.step_mem = Some(step_mem);
+
+    /* re-attach internal error weight functions if necessary */
+    ark_reattach_tolerances(ark_mem)
+}
+
+/* shared tail of ARKStepSetImplicit/SetImEx: re-attach internal
+   error weight functions if necessary */
+fn ark_reattach_tolerances(ark_mem: &mut ARKodeMem) -> i32 {
+    use crate::arkode::{ARKodeSStolerances, ARKodeSVtolerances};
+    use crate::arkode_impl::ARK_SV;
+
+    if !ark_mem.user_efun {
+        let retval;
+        if ark_mem.itol == ARK_SV && ark_mem.Vabstol.is_some() {
+            let vabstol = ark_mem.Vabstol.take().unwrap();
+            retval = ARKodeSVtolerances(ark_mem, ark_mem.reltol, &vabstol);
+            /* (ARKodeSVtolerances stores its own copy; restore the
+               original slot only if the call failed to do so) */
+            if ark_mem.Vabstol.is_none() {
+                ark_mem.Vabstol = Some(vabstol);
+            }
+        } else {
+            retval = ARKodeSStolerances(ark_mem, ark_mem.reltol, ark_mem.Sabstol);
+        }
+        if retval != ARK_SUCCESS {
+            return retval;
+        }
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKStepSetTables:
+
+  Specifies to use customized Butcher tables for the system.
+
+  If Bi is NULL, then this sets the integrator in 'explicit' mode.
+
+  If Be is NULL, then this sets the integrator in 'implicit' mode.
+
+  Returns ARK_ILL_INPUT if both Butcher tables are not supplied.
+  ---------------------------------------------------------------*/
+pub fn ARKStepSetTables(
+    ark_mem: &mut ARKodeMem,
+    q: i32,
+    p: i32,
+    Bi: Option<&ARKodeButcherTable>,
+    Be: Option<&ARKodeButcherTable>,
+) -> i32 {
+    use crate::arkode_butcher::ARKodeButcherTable_Copy;
+
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "ARKStepSetTables") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    /* check for illegal inputs */
+    if Bi.is_none() && Be.is_none() {
+        ark_mem.step_mem = Some(step_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "ARKStepSetTables",
+            file!(),
+            "At least one complete table must be supplied",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* if both tables are set, check that they have the same number of stages */
+    if let (Some(bi), Some(be)) = (Bi, Be) {
+        if bi.stages != be.stages {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKStepSetTables",
+                file!(),
+                "Both tables must have the same number of stages",
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* clear any existing parameters and Butcher tables */
+    step_mem.stages = 0;
+    step_mem.q = 0;
+    step_mem.p = 0;
+
+    if let Some(bt) = step_mem.Be.take() {
+        let (mut bliw, mut blrw) = (0i64, 0i64);
+        ARKodeButcherTable_Space(&bt, &mut bliw, &mut blrw);
+        ark_mem.liw -= bliw;
+        ark_mem.lrw -= blrw;
+    }
+    if let Some(bt) = step_mem.Bi.take() {
+        let (mut bliw, mut blrw) = (0i64, 0i64);
+        ARKodeButcherTable_Space(&bt, &mut bliw, &mut blrw);
+        ark_mem.liw -= bliw;
+        ark_mem.lrw -= blrw;
+    }
+
+    /*
+     * determine mode (implicit/explicit/ImEx), and perform appropriate actions
+     */
+    if let (None, Some(be)) = (Bi, Be) {
+        /* explicit: set the relevant parameters (use table q and p) */
+        step_mem.stages = be.stages;
+        step_mem.q = be.q;
+        step_mem.p = be.p;
+
+        /* copy the table in step memory */
+        step_mem.Be = ARKodeButcherTable_Copy(be);
+
+        ark_mem.step_mem = Some(step_mem);
+
+        /* set method as purely explicit */
+        let retval = ARKStepSetExplicit(ark_mem);
+        if retval != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKStepSetTables",
+                file!(),
+                "Error in ARKStepSetExplicit",
+            );
+            return retval;
+        }
+    } else if let (Some(bi), None) = (Bi, Be) {
+        /* implicit: set the relevant parameters (use table q and p) */
+        step_mem.stages = bi.stages;
+        step_mem.q = bi.q;
+        step_mem.p = bi.p;
+
+        /* copy the table in step memory */
+        step_mem.Bi = ARKodeButcherTable_Copy(bi);
+
+        ark_mem.step_mem = Some(step_mem);
+
+        /* set method as purely implicit */
+        let retval = ARKStepSetImplicit(ark_mem);
+        if retval != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKStepSetTables",
+                file!(),
+                "Error in ARKStepSetImplicit",
+            );
+            return ARK_ILL_INPUT;
+        }
+    } else {
+        /* ImEx: set the relevant parameters (use input q and p) */
+        let (bi, be) = (Bi.unwrap(), Be.unwrap());
+        step_mem.stages = bi.stages;
+        step_mem.q = q;
+        step_mem.p = p;
+
+        /* copy the explicit and implicit tables into step memory */
+        step_mem.Be = ARKodeButcherTable_Copy(be);
+        step_mem.Bi = ARKodeButcherTable_Copy(bi);
+
+        ark_mem.step_mem = Some(step_mem);
+
+        /* set method as ImEx */
+        let retval = ARKStepSetImEx(ark_mem);
+        if retval != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKStepSetTables",
+                file!(),
+                "Error in ARKStepSetImEx",
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* note Butcher table space requirements */
+    let step_mem = arkStep_AccessStepMem(ark_mem, "ARKStepSetTables").unwrap();
+    let (mut bliw, mut blrw) = (0i64, 0i64);
+    if let Some(be) = &step_mem.Be {
+        ARKodeButcherTable_Space(be, &mut bliw, &mut blrw);
+        ark_mem.liw += bliw;
+        ark_mem.lrw += blrw;
+    }
+    if let Some(bi) = &step_mem.Bi {
+        ARKodeButcherTable_Space(bi, &mut bliw, &mut blrw);
+        ark_mem.liw += bliw;
+        ark_mem.lrw += blrw;
+    }
+    ark_mem.step_mem = Some(step_mem);
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKStepSetTableNum:
+
+  Specifies to use pre-existing Butcher tables for the system,
+  based on the integer flags passed to
+  ARKodeButcherTable_LoadERK() and ARKodeButcherTable_LoadDIRK()
+  within the files arkode_butcher_erk.rs and arkode_butcher_dirk.rs
+  (automatically calls ARKStepSetImEx).
+
+  If either argument is negative (illegal), then this disables the
+  corresponding table (e.g. itable = -1  ->  explicit)
+
+  Note: this routine should NOT be used in conjunction with
+  ARKodeSetOrder.
+  ---------------------------------------------------------------*/
+pub fn ARKStepSetTableNum(
+    ark_mem: &mut ARKodeMem,
+    itable: crate::arkode_butcher_dirk::ARKODE_DIRKTableID,
+    etable: crate::arkode_butcher_erk::ARKODE_ERKTableID,
+) -> i32 {
+    use crate::arkode_butcher_dirk::{
+        ARKodeButcherTable_LoadDIRK, ARKODE_ARK2_DIRK_3_1_2, ARKODE_ARK324L2SA_DIRK_4_2_3,
+        ARKODE_ARK436L2SA_DIRK_6_3_4, ARKODE_ARK437L2SA_DIRK_7_3_4, ARKODE_ARK548L2SA_DIRK_8_4_5,
+        ARKODE_ARK548L2SAb_DIRK_8_4_5, ARKODE_MAX_DIRK_NUM, ARKODE_MIN_DIRK_NUM,
+    };
+    use crate::arkode_butcher_erk::{
+        ARKodeButcherTable_LoadERK, ARKODE_ARK2_ERK_3_1_2, ARKODE_ARK324L2SA_ERK_4_2_3,
+        ARKODE_ARK436L2SA_ERK_6_3_4, ARKODE_ARK437L2SA_ERK_7_3_4, ARKODE_ARK548L2SA_ERK_8_4_5,
+        ARKODE_ARK548L2SAb_ERK_8_4_5, ARKODE_MAX_ERK_NUM, ARKODE_MIN_ERK_NUM,
+    };
+
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "ARKStepSetTableNum") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    /* clear any existing parameters and Butcher tables */
+    step_mem.stages = 0;
+    step_mem.q = 0;
+    step_mem.p = 0;
+
+    if let Some(bt) = step_mem.Be.take() {
+        let (mut bliw, mut blrw) = (0i64, 0i64);
+        ARKodeButcherTable_Space(&bt, &mut bliw, &mut blrw);
+        ark_mem.liw -= bliw;
+        ark_mem.lrw -= blrw;
+    }
+    if let Some(bt) = step_mem.Bi.take() {
+        let (mut bliw, mut blrw) = (0i64, 0i64);
+        ARKodeButcherTable_Space(&bt, &mut bliw, &mut blrw);
+        ark_mem.liw -= bliw;
+        ark_mem.lrw -= blrw;
+    }
+
+    /* determine mode (implicit/explicit/ImEx), and perform
+       appropriate actions  */
+
+    if itable < 0 && etable < 0 {
+        /*     illegal inputs */
+        ark_mem.step_mem = Some(step_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_NULL,
+            line!(),
+            "ARKStepSetTableNum",
+            file!(),
+            "At least one valid table number must be supplied",
+        );
+        return ARK_ILL_INPUT;
+    } else if itable < 0 {
+        /* explicit: check that argument specifies an explicit table */
+        if etable < ARKODE_MIN_ERK_NUM || etable > ARKODE_MAX_ERK_NUM {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Illegal ERK table number",
+            );
+            return ARK_ILL_INPUT;
+        }
+
+        /* fill in table based on argument */
+        step_mem.Be = ARKodeButcherTable_LoadERK(etable);
+        if step_mem.Be.is_none() {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Error setting explicit table with that index",
+            );
+            return ARK_ILL_INPUT;
+        }
+        {
+            let be = step_mem.Be.as_ref().unwrap();
+            step_mem.stages = be.stages;
+            step_mem.q = be.q;
+            step_mem.p = be.p;
+        }
+
+        ark_mem.step_mem = Some(step_mem);
+
+        /* set method as purely explicit */
+        let flag = ARKStepSetExplicit(ark_mem);
+        if flag != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Error in ARKStepSetExplicit",
+            );
+            return flag;
+        }
+    } else if etable < 0 {
+        /* implicit: check that argument specifies an implicit table */
+        if itable < ARKODE_MIN_DIRK_NUM || itable > ARKODE_MAX_DIRK_NUM {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Illegal IRK table number",
+            );
+            return ARK_ILL_INPUT;
+        }
+
+        /* fill in table based on argument */
+        step_mem.Bi = ARKodeButcherTable_LoadDIRK(itable);
+        if step_mem.Bi.is_none() {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Error setting table with that index",
+            );
+            return ARK_ILL_INPUT;
+        }
+        {
+            let bi = step_mem.Bi.as_ref().unwrap();
+            step_mem.stages = bi.stages;
+            step_mem.q = bi.q;
+            step_mem.p = bi.p;
+        }
+
+        ark_mem.step_mem = Some(step_mem);
+
+        /* set method as purely implicit */
+        let flag = ARKStepSetImplicit(ark_mem);
+        if flag != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Error in ARKStepSetImplicit",
+            );
+            return flag;
+        }
+    } else {
+        /* ImEx: ensure that tables match (C's chained !(..)&&!(..) shape) */
+        #[allow(clippy::nonminimal_bool)]
+        let incompatible = !(etable == ARKODE_ARK324L2SA_ERK_4_2_3 && itable == ARKODE_ARK324L2SA_DIRK_4_2_3)
+            && !(etable == ARKODE_ARK436L2SA_ERK_6_3_4 && itable == ARKODE_ARK436L2SA_DIRK_6_3_4)
+            && !(etable == ARKODE_ARK437L2SA_ERK_7_3_4 && itable == ARKODE_ARK437L2SA_DIRK_7_3_4)
+            && !(etable == ARKODE_ARK548L2SA_ERK_8_4_5 && itable == ARKODE_ARK548L2SA_DIRK_8_4_5)
+            && !(etable == ARKODE_ARK548L2SAb_ERK_8_4_5
+                && itable == ARKODE_ARK548L2SAb_DIRK_8_4_5)
+            && !(etable == ARKODE_ARK2_ERK_3_1_2 && itable == ARKODE_ARK2_DIRK_3_1_2);
+        if incompatible {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Incompatible Butcher tables for ARK method",
+            );
+            return ARK_ILL_INPUT;
+        }
+
+        /* fill in tables based on arguments */
+        step_mem.Bi = ARKodeButcherTable_LoadDIRK(itable);
+        step_mem.Be = ARKodeButcherTable_LoadERK(etable);
+        if step_mem.Bi.is_none() {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Illegal IRK table number",
+            );
+            return ARK_ILL_INPUT;
+        }
+        if step_mem.Be.is_none() {
+            ark_mem.step_mem = Some(step_mem);
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_NULL,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                "Illegal ERK table number",
+            );
+            return ARK_ILL_INPUT;
+        }
+        {
+            let bi = step_mem.Bi.as_ref().unwrap();
+            step_mem.stages = bi.stages;
+            step_mem.q = bi.q;
+            step_mem.p = bi.p;
+        }
+
+        ark_mem.step_mem = Some(step_mem);
+
+        /* set method as ImEx */
+        if ARKStepSetImEx(ark_mem) != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "ARKStepSetTableNum",
+                file!(),
+                MSG_ARK_MISSING_F,
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKStepSetTableName:
+
+  Specifies to use pre-existing Butcher tables for the system,
+  based on the string passed to
+  ARKodeButcherTable_LoadERKByName() and
+  ARKodeButcherTable_LoadDIRKByName() (automatically calls
+  ARKStepSetImEx).
+
+  If itable is "ARKODE_DIRK_NONE" or etable is "ARKODE_ERK_NONE",
+  then this disables the corresponding table.
+  ---------------------------------------------------------------*/
+pub fn ARKStepSetTableName(ark_mem: &mut ARKodeMem, itable: &str, etable: &str) -> i32 {
+    ARKStepSetTableNum(
+        ark_mem,
+        crate::arkode_butcher_dirk::arkButcherTableDIRKNameToID(itable),
+        crate::arkode_butcher_erk::arkButcherTableERKNameToID(etable),
+    )
+}

@@ -155,7 +155,7 @@ example.
 | ark_analytic_nonlin | IDENTICAL (shipped ref; the FIRST arkode example, verified byte-exact) |
 | ark_analytic_partitioned | todo |
 | ark_analytic_ssprk | todo |
-| ark_brusselator | todo |
+| ark_brusselator | IDENTICAL (shipped ref; exercises deduce_rhs + SetAutonomous/TrivialPredAutonomous residual + Lagrange interpolant + Newton failure-retry paths, verified byte-exact) |
 | ark_brusselator1D | todo |
 | ark_brusselator1D_imexmri | todo |
 | ark_brusselator_1D_mri | todo |

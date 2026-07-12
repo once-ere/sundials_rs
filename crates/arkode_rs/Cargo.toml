@@ -15,3 +15,7 @@ path = "examples/ark_analytic_nonlin.rs"
 [[example]]
 name = "ark_analytic"
 path = "examples/ark_analytic.rs"
+
+[[example]]
+name = "ark_brusselator"
+path = "examples/ark_brusselator.rs"
