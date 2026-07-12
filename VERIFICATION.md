@@ -168,7 +168,7 @@ example.
 | ark_harmonic_symplectic | todo |
 | ark_heat1D | todo |
 | ark_heat1D_adapt | todo |
-| ark_kepler | todo |
+| ark_kepler | 1 IDENTICAL + 12 LOCAL-C (all 13 arg variants byte-match a freshly built 7.7.0 C binary; shipped .out files predate the SUN_TABLE_WIDTH 28->29 change; covers SPRK standard + compensated-sum steps, 9 SPRK tables, SPRK rootfinding, explicit ARKStep ERK fixed/adaptive, tstop, check-order) |
 | ark_kpr_mri | todo |
 | ark_lotka_volterra_ASA | todo |
 | ark_onewaycouple_mri | todo |

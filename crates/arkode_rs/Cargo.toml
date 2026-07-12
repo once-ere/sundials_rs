@@ -35,3 +35,7 @@ path = "examples/ark_robertson_root.rs"
 [[example]]
 name = "ark_KrylovDemo_prec"
 path = "examples/ark_KrylovDemo_prec.rs"
+
+[[example]]
+name = "ark_kepler"
+path = "examples/ark_kepler.rs"

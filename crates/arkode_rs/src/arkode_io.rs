@@ -1026,3 +1026,20 @@ pub fn ARKodeGetCurrentStep(ark_mem: &mut ARKodeMem, hcur: &mut f64) -> i32 {
     *hcur = ark_mem.next_h;
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKodeSetUseCompensatedSums:
+
+  Turns compensated summation on/off in the shared and stepper
+  modules.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetUseCompensatedSums(ark_mem: &mut ARKodeMem, onoff: bool) -> i32 {
+    ark_mem.use_compensated_sums = onoff;
+
+    /* Call stepper routine (if provided) */
+    if let Some(set) = ark_mem.step_setusecompensatedsums {
+        return set(ark_mem, onoff);
+    }
+
+    ARK_SUCCESS
+}
