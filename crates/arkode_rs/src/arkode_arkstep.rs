@@ -85,7 +85,7 @@ pub fn ARKStepCreate(
     ark_mem.step_printallstats = Some(crate::arkode_arkstep_io::arkStep_PrintAllStats);
     ark_mem.step_writeparameters = Some(crate::arkode_arkstep_io::arkStep_WriteParameters);
     ark_mem.step_setusecompensatedsums = None;
-    ark_mem.step_resize = None; /* arkStep_Resize: with arkode.c Resize */
+    ark_mem.step_resize = Some(arkStep_Resize);
     ark_mem.step_free = Some(arkStep_Free);
     ark_mem.step_printmem = Some(arkStep_PrintMem);
     ark_mem.step_setdefaults = Some(crate::arkode_arkstep_io::arkStep_SetDefaults);
@@ -307,6 +307,122 @@ pub fn ARKStepReInit(
 /*===============================================================
   Interface routines supplied to ARKODE
   ===============================================================*/
+
+/*---------------------------------------------------------------
+  arkStep_Resize:
+
+  This routine resizes the memory within the ARKStep module.
+  ---------------------------------------------------------------*/
+pub fn arkStep_Resize(
+    ark_mem: &mut ARKodeMem,
+    y0: &NVector,
+    _hscale: f64,
+    _t0: f64,
+    resize: Option<ARKVecResizeFn>,
+    resize_data: &mut UserData,
+) -> i32 {
+    /* access ARKodeARKStepMem structure */
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "arkStep_Resize") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    /* Determine change in vector sizes */
+    let lrw1 = y0.data.len() as i64;
+    let liw1 = 1i64;
+    let lrw_diff = lrw1 - ark_mem.lrw1;
+    let liw_diff = liw1 - ark_mem.liw1;
+    ark_mem.lrw1 = lrw1;
+    ark_mem.liw1 = liw1;
+
+    /* (each arkResizeVec failure path puts step_mem back and errors) */
+    macro_rules! resize_or_fail {
+        ($v:expr) => {{
+            if !crate::arkode::arkResizeVec(
+                ark_mem,
+                resize,
+                resize_data,
+                lrw_diff,
+                liw_diff,
+                y0,
+                $v,
+            ) {
+                ark_mem.step_mem = Some(step_mem);
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_MEM_FAIL,
+                    line!(),
+                    "arkStep_Resize",
+                    file!(),
+                    "Unable to resize vector",
+                );
+                return ARK_MEM_FAIL;
+            }
+        }};
+    }
+
+    /* Resize the sdata, zpred and zcor vectors */
+    resize_or_fail!(&mut step_mem.sdata);
+    resize_or_fail!(&mut step_mem.zpred);
+    resize_or_fail!(&mut step_mem.zcor);
+
+    /* Resize the ARKStep vectors */
+    /*     Fe */
+    for i in 0..step_mem.Fe.len() {
+        resize_or_fail!(&mut step_mem.Fe[i]);
+    }
+    /*     Fi */
+    for i in 0..step_mem.Fi.len() {
+        resize_or_fail!(&mut step_mem.Fi[i]);
+    }
+
+    /* If a NLS object was previously used, destroy and recreate default
+       Newton NLS object (can be replaced by user-defined object if
+       desired) */
+    let recreate_nls = step_mem.NLS.is_some() && step_mem.ownNLS;
+    if recreate_nls {
+        /* destroy existing NLS object */
+        step_mem.NLS = None;
+        step_mem.ownNLS = false;
+    }
+    ark_mem.step_mem = Some(step_mem);
+
+    if recreate_nls {
+        /* create and attach new Newton NLS object */
+        let nls = crate::sunnonlinsol_newton::SUNNonlinSol_Newton(
+            y0,
+            &crate::sundials_context::SUNContext_Create(),
+        );
+        let retval = crate::arkode_io::ARKodeSetNonlinearSolver(ark_mem, nls);
+        if retval != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_MEM_FAIL,
+                line!(),
+                "arkStep_Resize",
+                file!(),
+                "Error attaching default Newton solver",
+            );
+            return ARK_MEM_FAIL;
+        }
+        if let Some(b) = ark_mem.step_mem.as_mut() {
+            if let Some(sm) = b.downcast_mut::<ARKodeARKStepMem>() {
+                sm.ownNLS = true;
+            }
+        }
+    }
+
+    /* reset nonlinear solver counters */
+    if let Some(b) = ark_mem.step_mem.as_mut() {
+        if let Some(sm) = b.downcast_mut::<ARKodeARKStepMem>() {
+            if sm.NLS.is_some() {
+                sm.nsetups = 0;
+            }
+        }
+    }
+
+    ARK_SUCCESS
+}
 
 /*---------------------------------------------------------------
   arkStep_ComputeState:

@@ -554,6 +554,187 @@ pub fn arkReplaceAdaptController(
     ARK_SUCCESS
 }
 
+/*---------------------------------------------------------------
+  arkSetAdaptivityMethod:
+
+  Specifies the built-in time step adaptivity algorithm (and
+  optionally, its associated parameters) to use.  All parameters
+  will be checked for validity when used by the solver.
+
+  Users should transition to constructing non-default SUNAdaptController
+  objects directly, and providing those directly to the integrator
+  via the time-stepping module *SetController routines.
+  ---------------------------------------------------------------*/
+pub fn arkSetAdaptivityMethod(
+    ark_mem: &mut ARKodeMem,
+    imethod: i32,
+    idefault: i32,
+    pq: i32,
+    adapt_params: Option<&[f64; 3]>,
+) -> i32 {
+    use crate::sunadaptcontroller_imexgus::{
+        SUNAdaptController_ImExGus, SUNAdaptController_SetParams_ImExGus,
+    };
+    use crate::sunadaptcontroller_soderlind::{
+        SUNAdaptController_ExpGus, SUNAdaptController_I, SUNAdaptController_ImpGus,
+        SUNAdaptController_PI, SUNAdaptController_PID, SUNAdaptController_SetParams_ExpGus,
+        SUNAdaptController_SetParams_I, SUNAdaptController_SetParams_ImpGus,
+        SUNAdaptController_SetParams_PI, SUNAdaptController_SetParams_PID,
+    };
+    use crate::arkode_impl::{ARK_CONTROLLER_ERR, ARK_ILL_INPUT};
+    use crate::sundials_adaptcontroller::SUNAdaptController_Space;
+    use crate::sundials_errors::SUN_SUCCESS;
+
+    /* the ARK_ADAPT_* method constants (arkode.h) */
+    const ARK_ADAPT_PID: i32 = 0;
+    const ARK_ADAPT_PI: i32 = 1;
+    const ARK_ADAPT_I: i32 = 2;
+    const ARK_ADAPT_EXP_GUS: i32 = 3;
+    const ARK_ADAPT_IMP_GUS: i32 = 4;
+    const ARK_ADAPT_IMEX_GUS: i32 = 5;
+
+    /* Check for illegal inputs */
+    if idefault != 1 && adapt_params.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_ILL_INPUT,
+            line!(),
+            "arkSetAdaptivityMethod",
+            file!(),
+            "NULL-valued adapt_params provided",
+        );
+        return ARK_ILL_INPUT;
+    }
+
+    /* Remove current SUNAdaptController object
+       (delete if owned, and then nullify pointer) */
+    {
+        let mut lenrw: i64 = 0;
+        let mut leniw: i64 = 0;
+        let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+        if hadapt_mem.owncontroller {
+            if let Some(hc) = hadapt_mem.hcontroller.as_ref() {
+                let retval = SUNAdaptController_Space(hc, &mut lenrw, &mut leniw);
+                if retval == SUN_SUCCESS {
+                    ark_mem.liw -= leniw;
+                    ark_mem.lrw -= lenrw;
+                }
+            }
+            /* SUNAdaptController_Destroy = drop */
+            let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+            hadapt_mem.owncontroller = false;
+        }
+        ark_mem.hadapt_mem.as_mut().unwrap().hcontroller = None;
+    }
+
+    /* set adaptivity parameters from inputs */
+    let mut k1 = ZERO;
+    let mut k2 = ZERO;
+    let mut k3 = ZERO;
+    if idefault != 1 {
+        let p = adapt_params.unwrap();
+        k1 = p[0];
+        k2 = p[1];
+        k3 = p[2];
+    }
+    ark_mem.hadapt_mem.as_mut().unwrap().pq = pq;
+
+    /* Create new SUNAdaptController object based on "imethod" input,
+       optionally setting the specified controller parameters */
+    macro_rules! params_or_controller_err {
+        ($retval:expr, $msg:expr) => {
+            if $retval != SUN_SUCCESS {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_CONTROLLER_ERR,
+                    line!(),
+                    "arkSetAdaptivityMethod",
+                    file!(),
+                    $msg,
+                );
+                return ARK_CONTROLLER_ERR;
+            }
+        };
+    }
+    let c = match imethod {
+        ARK_ADAPT_PID => {
+            let mut c = SUNAdaptController_PID();
+            if idefault != 1 {
+                let retval = SUNAdaptController_SetParams_PID(&mut c, k1, -k2, k3);
+                params_or_controller_err!(retval, "SUNAdaptController_SetParams_PID failure");
+            }
+            c
+        }
+        ARK_ADAPT_PI => {
+            let mut c = SUNAdaptController_PI();
+            if idefault != 1 {
+                let retval = SUNAdaptController_SetParams_PI(&mut c, k1, -k2);
+                params_or_controller_err!(retval, "SUNAdaptController_SetParams_PI failure");
+            }
+            c
+        }
+        ARK_ADAPT_I => {
+            let mut c = SUNAdaptController_I();
+            if idefault != 1 {
+                let retval = SUNAdaptController_SetParams_I(&mut c, k1);
+                params_or_controller_err!(retval, "SUNAdaptController_SetParams_I failure");
+            }
+            c
+        }
+        ARK_ADAPT_EXP_GUS => {
+            let mut c = SUNAdaptController_ExpGus();
+            if idefault != 1 {
+                let retval = SUNAdaptController_SetParams_ExpGus(&mut c, k1, k2);
+                params_or_controller_err!(retval, "SUNAdaptController_SetParams_ExpGus failure");
+            }
+            c
+        }
+        ARK_ADAPT_IMP_GUS => {
+            let mut c = SUNAdaptController_ImpGus();
+            if idefault != 1 {
+                let retval = SUNAdaptController_SetParams_ImpGus(&mut c, k1, k2);
+                params_or_controller_err!(retval, "SUNAdaptController_SetParams_ImpGus failure");
+            }
+            c
+        }
+        ARK_ADAPT_IMEX_GUS => {
+            let mut c = SUNAdaptController_ImExGus();
+            if idefault != 1 {
+                let retval = SUNAdaptController_SetParams_ImExGus(&mut c, k1, k2, k3, k3);
+                params_or_controller_err!(retval, "SUNAdaptController_SetParams_ImExGus failure");
+            }
+            c
+        }
+        _ => {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkSetAdaptivityMethod",
+                file!(),
+                "Illegal imethod",
+            );
+            return ARK_ILL_INPUT;
+        }
+    };
+
+    /* Attach new SUNAdaptController object */
+    {
+        let mut lenrw: i64 = 0;
+        let mut leniw: i64 = 0;
+        let retval = SUNAdaptController_Space(&c, &mut lenrw, &mut leniw);
+        if retval == SUN_SUCCESS {
+            ark_mem.liw += leniw;
+            ark_mem.lrw += lenrw;
+        }
+        let hadapt_mem = ark_mem.hadapt_mem.as_mut().unwrap();
+        hadapt_mem.hcontroller = Some(c);
+        hadapt_mem.owncontroller = true;
+    }
+
+    ARK_SUCCESS
+}
+
 /* -----------------------------------------------------------------
  * Counterparts of sunfprintf_real / sunfprintf_long
  * (src/sundials/sundials_utils.h). SUN_FORMAT_G is "%.15g" and

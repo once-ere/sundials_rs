@@ -239,6 +239,20 @@ pub fn ERKStepGetTimestepperStats(
   ===============================================================*/
 
 /*---------------------------------------------------------------
+  ERKStepSetAdaptivityMethod: user-callable deprecated wrapper
+  around arkSetAdaptivityMethod.
+  ---------------------------------------------------------------*/
+pub fn ERKStepSetAdaptivityMethod(
+    ark_mem: &mut ARKodeMem,
+    imethod: i32,
+    idefault: i32,
+    pq: i32,
+    adapt_params: Option<&[f64; 3]>,
+) -> i32 {
+    crate::arkode_io::arkSetAdaptivityMethod(ark_mem, imethod, idefault, pq, adapt_params)
+}
+
+/*---------------------------------------------------------------
   erkStep_SetRelaxFn:
 
   Sets up the relaxation module using ERKStep's utility routines.

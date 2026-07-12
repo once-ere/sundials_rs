@@ -165,6 +165,85 @@ pub fn arkResizeVec(
 }
 
 /*---------------------------------------------------------------
+  arkResizeVectors:
+
+  This routine resizes all ARKODE vectors if they exist,
+  otherwise they are left alone. If a resize function is provided
+  it is called to resize the vectors otherwise the vector is
+  freed and a new vector is created by cloning in input vector.
+  This routine also updates the optional outputs lrw and liw,
+  which are (respectively) the lengths of the real and integer
+  work spaces.
+
+  If all memory allocations are successful, arkResizeVectors
+  returns SUNTRUE, otherwise it returns SUNFALSE.
+  ---------------------------------------------------------------*/
+pub fn arkResizeVectors(
+    ark_mem: &mut ARKodeMem,
+    resize: Option<ARKVecResizeFn>,
+    resize_data: &mut UserData,
+    lrw_diff: i64,
+    liw_diff: i64,
+    tmpl: &NVector,
+) -> bool {
+    /* (each field is detached around the arkResizeVec call, which
+       needs &mut ark_mem for the lrw/liw accounting) */
+    macro_rules! resize_owned {
+        ($field:ident) => {{
+            let mut v = std::mem::replace(&mut ark_mem.$field, NVector::new(0));
+            let ok = arkResizeVec(ark_mem, resize, resize_data, lrw_diff, liw_diff, tmpl, &mut v);
+            ark_mem.$field = v;
+            if !ok {
+                return false;
+            }
+        }};
+    }
+    macro_rules! resize_optional {
+        ($field:ident) => {{
+            if let Some(mut v) = ark_mem.$field.take() {
+                let ok =
+                    arkResizeVec(ark_mem, resize, resize_data, lrw_diff, liw_diff, tmpl, &mut v);
+                ark_mem.$field = Some(v);
+                if !ok {
+                    return false;
+                }
+            }
+        }};
+    }
+
+    /* Vabstol */
+    resize_optional!(Vabstol);
+
+    /* VRabstol */
+    resize_optional!(VRabstol);
+
+    /* ewt */
+    resize_owned!(ewt);
+
+    /* rwt: C re-points rwt at ewt when rwt_is_ewt (the Rust rwt is
+       left unallocated in that case; Addendum C.1), otherwise it is
+       resized as a distinct vector */
+    if !ark_mem.rwt_is_ewt {
+        resize_owned!(rwt);
+    }
+
+    /* yn */
+    resize_owned!(yn);
+
+    /* fn */
+    resize_owned!(fn_);
+
+    /* tempv* */
+    resize_owned!(tempv1);
+    resize_owned!(tempv2);
+    resize_owned!(tempv3);
+    resize_owned!(tempv4);
+    resize_owned!(tempv5);
+
+    true
+}
+
+/*---------------------------------------------------------------
   arkCreate:
 
   Create and set default values in the ARKodeMem structure. The C
@@ -2701,6 +2780,136 @@ pub fn ARKodeEvolve(
     } /* end looping for internal steps */
 
     istate
+}
+
+/*---------------------------------------------------------------
+  ARKodeResize:
+
+  ARKodeResize re-initializes ARKODE's memory for a problem with a
+  changing vector size.  It is assumed that the problem dynamics
+  before and after the vector resize will be comparable, so that
+  all time-stepping heuristics prior to calling ARKodeResize
+  remain valid after the call.  If instead the dynamics should be
+  re-calibrated, the ARKODE memory structure should be deleted
+  with a call to ARKodeFree, and re-created with a call to
+  *StepCreate.
+  ---------------------------------------------------------------*/
+pub fn ARKodeResize(
+    ark_mem: &mut ARKodeMem,
+    y0: &NVector,
+    hscale: f64,
+    t0: f64,
+    resize: Option<ARKVecResizeFn>,
+    resize_data: &mut UserData,
+) -> i32 {
+    use crate::arkode_impl::{ARK_NO_MALLOC, FOUR, MSG_ARK_NO_MALLOC};
+    use crate::nvector_serial::N_VScale;
+
+    /* Check if ark_mem was allocated */
+    if !ark_mem.MallocDone {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_NO_MALLOC,
+            line!(),
+            "ARKodeResize",
+            file!(),
+            MSG_ARK_NO_MALLOC,
+        );
+        return ARK_NO_MALLOC;
+    }
+
+    /* (C's y0 == NULL input check collapses: y0 is &NVector) */
+
+    /* Copy the input parameters into ARKODE state */
+    ark_mem.tcur = t0;
+    ark_mem.tn = t0;
+
+    /* Update time-stepping parameters */
+    /*   adjust upcoming step size depending on hscale */
+    let hscale = if hscale <= ZERO { ONE } else { hscale };
+    if hscale != ONE {
+        /* Encode hscale into ark_mem structure */
+        ark_mem.eta = hscale;
+        ark_mem.hprime *= hscale;
+
+        /* If next step would overtake tstop, adjust stepsize */
+        if ark_mem.tstopset
+            && (ark_mem.tcur + ark_mem.hprime - ark_mem.tstop) * ark_mem.hprime > ZERO
+        {
+            ark_mem.hprime =
+                (ark_mem.tstop - ark_mem.tcur) * (ONE - FOUR * ark_mem.uround);
+            ark_mem.eta = ark_mem.hprime / ark_mem.h;
+        }
+    }
+
+    /* Determine change in vector sizes */
+    let lrw1 = y0.data.len() as i64;
+    let liw1 = 1i64;
+    let lrw_diff = lrw1 - ark_mem.lrw1;
+    let liw_diff = liw1 - ark_mem.liw1;
+    ark_mem.lrw1 = lrw1;
+    ark_mem.liw1 = liw1;
+
+    /* Disable constraints, the user will need to set a new constraint vector
+       for the updated problem size */
+    if let Some(mut c) = ark_mem.constraints.take() {
+        arkFreeVec(ark_mem, &mut c);
+    }
+
+    /* Resize the solver vectors (using y0 as a template) */
+    let resizeOK = arkResizeVectors(ark_mem, resize, resize_data, lrw_diff, liw_diff, y0);
+    if !resizeOK {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_MEM_FAIL,
+            line!(),
+            "ARKodeResize",
+            file!(),
+            "Unable to resize vector",
+        );
+        return ARK_MEM_FAIL;
+    }
+
+    /* Resize ycur: in C ycur is a pointer to the user-provided (already
+       resized) solution memory; the Rust ycur is owned (workspace rule 5),
+       so it is re-created here with the y0 contents (no lrw/liw change —
+       C never counts the user's vector) */
+    let mut ycur = NVector::new(y0.data.len());
+    N_VScale(ONE, y0, &mut ycur);
+    ark_mem.ycur = ycur;
+
+    /* Resize the interpolation structure memory */
+    let retval = crate::arkode_interp::arkInterpResize(
+        ark_mem, resize, resize_data, lrw_diff, liw_diff, y0,
+    );
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "ARKodeResize",
+            file!(),
+            "Interpolation module resize failure",
+        );
+        return retval;
+    }
+
+    /* Copy y0 into ark_yn to set the current solution */
+    N_VScale(ONE, y0, &mut ark_mem.yn);
+    ark_mem.fn_is_current = false;
+
+    /* Indicate that problem needs to be initialized */
+    ark_mem.initsetup = true;
+    ark_mem.init_type = crate::arkode_impl::RESIZE_INIT;
+    ark_mem.firststage = true;
+
+    /* Call the stepper-specific resize (if provided) */
+    if let Some(step_resize) = ark_mem.step_resize {
+        return step_resize(ark_mem, y0, hscale, t0, resize, resize_data);
+    }
+
+    /* Problem has been successfully re-sized */
+    ARK_SUCCESS
 }
 
 /*---------------------------------------------------------------

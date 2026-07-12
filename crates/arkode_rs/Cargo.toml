@@ -87,3 +87,11 @@ path = "examples/ark_conserved_exp_entropy_erk.rs"
 [[example]]
 name = "ark_dissipated_exp_entropy"
 path = "examples/ark_dissipated_exp_entropy.rs"
+
+[[example]]
+name = "ark_heat1D"
+path = "examples/ark_heat1D.rs"
+
+[[example]]
+name = "ark_heat1D_adapt"
+path = "examples/ark_heat1D_adapt.rs"

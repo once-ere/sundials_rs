@@ -4,3 +4,8 @@ solution.txt
 *_stats*.csv
 new_prompt.md
 ark_kepler_*.txt
+ark_conserved_exp_entropy_ark.txt
+ark_conserved_exp_entropy_erk.txt
+ark_dissipated_exp_entropy.txt
+heat1D.txt
+heat_mesh.txt
