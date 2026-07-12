@@ -13,3 +13,7 @@ bruss_mesh.txt
 bruss_u.txt
 bruss_v.txt
 bruss_w.txt
+bruss1D_mesh.txt
+bruss1D_u_*.txt
+bruss1D_v_*.txt
+bruss1D_w_*.txt
