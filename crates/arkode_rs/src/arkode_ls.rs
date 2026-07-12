@@ -66,7 +66,7 @@ pub(crate) fn arkLs_AccessLMem(
 
 /* rwt aliasing helper: rwt_is_ewt == SUNTRUE means the C rwt pointer
    aliases ewt (the Rust rwt is left unallocated; Addendum C.1). */
-fn ark_rwt(ark_mem: &ARKodeMem) -> &NVector {
+pub(crate) fn ark_rwt(ark_mem: &ARKodeMem) -> &NVector {
     if ark_mem.rwt_is_ewt {
         &ark_mem.ewt
     } else {
@@ -222,6 +222,7 @@ pub fn ARKodeSetLinearSolver(
         /* Set defaults for preconditioner-related fields */
         pset: None,
         psolve: None,
+        prec_module: PrecModule::None,
 
         /* Jacobian-times-vector: internal DQ by default */
         jtimesDQ: SUNTRUE,
@@ -1388,7 +1389,10 @@ fn arkLsInitialize_inner(ark_mem: &mut ARKodeMem, arkls_mem: &mut ARKLsMem) -> i
 
     /* If A is NULL and psetup is not present, then arkLsSetup does
        not need to be called, so set the lsetup function to NULL (if possible) */
-    if arkls_mem.A.is_none() && arkls_mem.pset.is_none() {
+    if arkls_mem.A.is_none()
+        && arkls_mem.pset.is_none()
+        && matches!(arkls_mem.prec_module, PrecModule::None)
+    {
         if let Some(disable) = ark_mem.step_disablelsetup {
             disable(ark_mem);
         }
@@ -1600,20 +1604,33 @@ fn arkLsSetup_inner(
         }
         _ => {
             /* iterative solver: preconditioner setup (arkLsPSetup); it is
-               only invoked when a user psetup routine exists.  C's pset
-               writes through the stepper's &jcur from step_getgammas; the
-               Rust write-back goes through the step_setjcur op. */
-            if let Some(pset) = arkls_mem.pset {
-                let mut jcur_ls = jcur;
-                let retval = pset(
-                    arkls_mem.tcur,
-                    ypred,
-                    fpred,
-                    !arkls_mem.jbad,
-                    &mut jcur_ls,
-                    gamma,
-                    &mut ark_mem.user_data,
+               only invoked when a psetup routine exists — either the
+               user-supplied pset or an internal bandpre/bbdpre module.
+               C's pset writes through the stepper's &jcur from
+               step_getgammas; the Rust write-back goes through the
+               step_setjcur op. */
+            let have_pset = arkls_mem.pset.is_some()
+                || matches!(
+                    arkls_mem.prec_module,
+                    PrecModule::BandPre(_) | PrecModule::BBDPre(_)
                 );
+            if have_pset {
+                let tcur = arkls_mem.tcur;
+                let jok = !arkls_mem.jbad;
+                let mut jcur_ls = jcur;
+                let retval = if let Some(pset) = arkls_mem.pset {
+                    pset(tcur, ypred, fpred, jok, &mut jcur_ls, gamma, &mut ark_mem.user_data)
+                } else {
+                    match &mut arkls_mem.prec_module {
+                        PrecModule::BandPre(bp) => crate::arkode_bandpre::ARKBandPrecSetup(
+                            ark_mem, bp, tcur, ypred, fpred, jok, &mut jcur_ls, gamma,
+                        ),
+                        PrecModule::BBDPre(bbd) => crate::arkode_bbdpre::ARKBBDPrecSetup(
+                            ark_mem, bbd, tcur, ypred, fpred, jok, &mut jcur_ls, gamma,
+                        ),
+                        PrecModule::None => SUN_SUCCESS,
+                    }
+                };
                 if let Some(setjcur) = ark_mem.step_setjcur {
                     setjcur(ark_mem, jcur_ls);
                 }
@@ -1898,12 +1915,17 @@ fn arkLsSolveIterative(
         jtimesDQ,
         Jt_f,
         psolve,
+        prec_module,
         ..
     } = arkls_mem;
     let jtimes = *jtimes;
     let jtimes_dq = *jtimesDQ;
     let jt_f = *Jt_f;
     let psolve_fn = *psolve;
+    /* a psolve routine exists if the user supplied one or an internal
+       bandpre/bbdpre module is attached */
+    let have_psolve = psolve_fn.is_some()
+        || matches!(prec_module, PrecModule::BandPre(_) | PrecModule::BBDPre(_));
 
     let ewt = std::mem::take(&mut ark_mem.ewt);
     /* s1 = rwt: alias of ewt when rwt_is_ewt (Addendum C.1) */
@@ -1995,17 +2017,22 @@ fn arkLsSolveIterative(
             return gret;
         }
 
-        /* call the user-supplied psolve routine, and accumulate count */
+        /* call the user-supplied psolve routine (or the internal
+           bandpre/bbdpre module solve), and accumulate count */
         let ret = if let Some(ps) = psolve_fn {
             ps(tnow, ynow, fnow, r, z, gamma, tol, lr, &mut ar.user_data)
         } else {
-            0
+            match &mut *prec_module {
+                PrecModule::BandPre(bp) => crate::arkode_bandpre::ARKBandPrecSolve(bp, r, z),
+                PrecModule::BBDPre(bbd) => crate::arkode_bbdpre::ARKBBDPrecSolve(bbd, r, z),
+                PrecModule::None => 0,
+            }
         };
         *nps += 1;
         ret
     };
 
-    let retval = if psolve_fn.is_some() {
+    let retval = if have_psolve {
         LS.solve(
             None,
             x,
@@ -2050,8 +2077,16 @@ pub fn arkLsFree(ark_mem: &mut ARKodeMem) -> i32 {
     arkFreeVec(ark_mem, &mut arkls_mem.ytemp);
     arkFreeVec(ark_mem, &mut arkls_mem.x);
 
-    /* savedJ / A / LS memory is dropped with the box (C frees savedJ,
-       nullifies the borrowed pointers, and calls any pfree here) */
+    /* Free preconditioner memory (C: if (arkls_mem->pfree)
+       arkls_mem->pfree(ark_mem)) */
+    match std::mem::replace(&mut arkls_mem.prec_module, PrecModule::None) {
+        PrecModule::BandPre(pdata) => crate::arkode_bandpre::ARKBandPrecFree(ark_mem, pdata),
+        PrecModule::BBDPre(pdata) => crate::arkode_bbdpre::ARKBBDPrecFree(ark_mem, pdata),
+        PrecModule::None => {}
+    }
+
+    /* savedJ / A / LS memory is dropped with the box (C frees savedJ
+       and nullifies the borrowed pointers here) */
     ARKLS_SUCCESS
 }
 

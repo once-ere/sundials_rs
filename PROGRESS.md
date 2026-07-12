@@ -840,10 +840,10 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_splittingstep.c — committed (SplittingStepCreate/ReInit/SetCoefficients/GetNumEvolves + splittingStep Init/FullRHS/SequentialMethod/TakeStep/PrintAllStats/WriteParameters/Free/PrintMem/SetOrder/GetStageIndex/SetOptions/SetDefaults; TakeStep mem::takes ycur+tempv1 around the inner SUNStepper evolves; ensure_ycur)
 - [x] arkode_forcingstep_impl.h — committed (ARKodeForcingStepMem; owning [SUNStepper; 2])
 - [x] arkode_forcingstep.c — committed (ForcingStepCreate/ReInit/GetNumEvolves + forcingStep Init/Reset/SetStepDirection/FullRHS/TakeStep/PrintAllStats/Free/PrintMem; tendency forcing (ycur-yn)/h fed to stepper 2 via SUNStepper_SetForcing)
-- [ ] arkode_bandpre_impl.h — todo
-- [ ] arkode_bandpre.c — todo
-- [ ] arkode_bbdpre_impl.h — todo
-- [ ] arkode_bbdpre.c — todo
+- [x] arkode_bandpre_impl.h — committed (ARKBandPrecData; C's `void* arkode_mem` back-pointer replaced by an `&mut ARKodeMem` argument to the setup/solve routines)
+- [x] arkode_bandpre.c — committed (ARKBandPrecInit/GetWorkSpace/GetNumRhsEvals + ARKBandPrecSetup/Solve/Free/PDQJac per the cvode_bandpre donor; installs PrecModule::BandPre in the new ARKLsMem.prec_module field — arkLsSetup's iterative pset arm and arkLsSolveIterative's psolve closure dispatch to the module when no user pset/psolve is set, arkLsInitialize's disable-lsetup gate and arkLsFree's pfree call extended likewise. No serial C example exercises ARKBANDPRE, so validation is by unit test: implicit 1D heat eq with ARKStep+SPGMR(left)+bandpre vs the exact semi-discrete solution, DQ savedJ vs the analytic tridiagonal Jacobian, counter/workspace/error-path checks)
+- [x] arkode_bbdpre_impl.h — committed (ARKBBDPrecData + ARKLocalFn/ARKCommFn; serial single-block reduction)
+- [x] arkode_bbdpre.c — committed (ARKBBDPrecInit/ReInit/GetWorkSpace/GetNumGfnEvals + ARKBBDPrecSetup/Solve/Free/DQJac per the cvode_bbdpre donor; zlocal/rlocal own storage and Solve copies in/out where C aliases the r/z data pointers; PrecModule::BBDPre dispatch as for bandpre. C drivers are MPI-only, so validation is by unit test: same heat problem via gloc, DQ savedJ vs analytic, ReInit nge reset, and cross-agreement (<1e-8) with an ARKBANDPRE run of identical bandwidths)
 - [x] arkode_relaxation_impl.h — committed (ARKodeRelaxMem struct + delta-E/get-order fn types)
 - [ ] arkode_relaxation.c — todo
 - [ ] arkode_user_controller.c/.h — todo

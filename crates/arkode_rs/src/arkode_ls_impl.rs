@@ -17,6 +17,8 @@
  * direct solvers; here M_lu is only populated (owned) in the direct
  * case.
  * -----------------------------------------------------------------*/
+use crate::arkode_bandpre_impl::ARKBandPrecData;
+use crate::arkode_bbdpre_impl::ARKBBDPrecData;
 use crate::nvector_serial::NVector;
 use crate::sundials_linearsolver::LinearSolver;
 use crate::sundials_matrix::SUNMatrix;
@@ -129,6 +131,20 @@ pub type ARKLsLinSysFn = fn(
     tmp3: &mut NVector,
 ) -> i32;
 
+/* Internal preconditioner module attached behind C's P_data/pfree
+   pointers: user-supplied pset/psolve routines keep P_data ==
+   user_data (the fields below), while ARKBandPrecInit/ARKBBDPrecInit
+   store their pdata block here and arkLsSetup / arkLsSolveIterative
+   dispatch to the module setup/solve routines. */
+pub enum PrecModule {
+    /// No internal preconditioner module attached (P_data == user_data)
+    None,
+    /// ARKBandPrecInit module data
+    BandPre(Box<ARKBandPrecData>),
+    /// ARKBBDPrecInit module data
+    BBDPre(Box<ARKBBDPrecData>),
+}
+
 /* -----------------------------------------------------------------
    Types : ARKLsMemRec, ARKLsMem
    -----------------------------------------------------------------*/
@@ -177,10 +193,11 @@ pub struct ARKLsMem {
 
     /* Preconditioner computation.
        C's P_data == user_data (user pset/psolve) or an internal
-       preconditioner module (bandpre/bbdpre, with pfree); the module
-       variants land with arkode_bandpre/arkode_bbdpre. */
+       preconditioner module (bandpre/bbdpre, with pfree); the
+       module variant lives in prec_module. */
     pub pset: Option<ARKLsPrecSetupFn>,
     pub psolve: Option<ARKLsPrecSolveFn>,
+    pub prec_module: PrecModule,
 
     /* Jacobian times vector computation.
        jtimes == None + jtimesDQ  =>  internal arkLsDQJtimes. */

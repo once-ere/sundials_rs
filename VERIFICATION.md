@@ -143,6 +143,15 @@ references must be regenerated the same way (C binaries live in the
 scratchpad sunbuild). One VERIFICATION line per reference file, not per
 example.
 
+Module-only units without any serial C driver are validated by unit test
+instead of a reference diff: ARKBANDPRE and ARKBBDPRE (C drivers are
+MPI-only) are covered by `arkode_bandpre::tests` / `arkode_bbdpre::tests`
+— implicit 1D heat equation with ARKStep + SPGMR(left) + the module
+preconditioner vs the exact semi-discrete solution, the internally
+generated DQ Jacobian vs the analytic tridiagonal Jacobian, band-vs-BBD
+trajectory cross-agreement (<1e-8), and counter/workspace/ReInit/
+error-path checks.
+
 | example | status |
 |---|---|
 | ark_KrylovDemo_prec | IDENTICAL incl. _1/_2 nrmfactor arg variants (shipped refs; matrix-free SPGMR + user Precond/PSolve + DQ Jtimes + ARKStepReInit + workspace accounting, all four jpre/gstype runs byte-exact) |
