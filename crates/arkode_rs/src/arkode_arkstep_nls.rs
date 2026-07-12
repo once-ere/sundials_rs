@@ -10,11 +10,8 @@
  * when (re)installing (mass_type / predictor / autonomous), so the
  * dispatch is evaluated at the call, with identical results.
  *
- * Not yet ported (pending their subsystems / a driving example):
- *  - the fixed-point sysfn family (arkStep_NlsFPFunction_*) and
- *    fixed-point solve loop (first needed by ark_brusselator_fp);
- *    attaching a fixed-point NLS errors at solve time.
- *  - the MassFixed/MassTDep residual variants (ARKLS mass half).
+ * Not yet ported (pending the ARKLS mass half): the
+ * MassFixed/MassTDep residual and fixed-point function variants.
  *
  * lsetup/lsolve op re-entries need step_mem installed in ark_mem
  * (arkLsSetup/arkLsSolve call step_getgammas etc.), so the wrappers
@@ -28,6 +25,7 @@ use crate::sundials_errors::SUN_SUCCESS;
 use crate::sundials_math::*;
 use crate::sundials_nonlinearsolver::*;
 use crate::sundials_types::*;
+use crate::sunnonlinsol_fixedpoint::FixedPointSolver;
 use crate::sunnonlinsol_newton::NewtonSolver;
 
 /*===============================================================
@@ -325,17 +323,10 @@ pub fn arkStep_Nls(
             let ret = arkStep_NlsSolveNewton(ark_mem, step_mem, &mut ns, tol, call_lsetup);
             (ret, NonlinearSolver::Newton(ns))
         }
-        NonlinearSolver::FixedPoint(fps) => {
-            step_mem.NLS = Some(NonlinearSolver::FixedPoint(fps));
-            arkProcessError(
-                Some(ark_mem),
-                ARK_ILL_INPUT,
-                line!(),
-                "arkStep_Nls",
-                file!(),
-                "fixed-point nonlinear solver not yet ported (pending ark_brusselator_fp)",
-            );
-            return ARK_ILL_INPUT;
+        NonlinearSolver::FixedPoint(mut fps) => {
+            let tol = step_mem.nlscoef;
+            let ret = arkStep_NlsSolveFixedPoint(ark_mem, step_mem, &mut fps, tol);
+            (ret, NonlinearSolver::FixedPoint(fps))
         }
     };
 
@@ -747,4 +738,166 @@ fn arkStep_NlsConvTest(
 
     /* return with flag that there is more work to do */
     SUN_NLS_CONTINUE
+}
+
+/*---------------------------------------------------------------
+  arkStep_NlsSolveFixedPoint: the generic
+  SUNNonlinSolSolve_FixedPoint loop (sunnonlinsol_fixedpoint.c),
+  specialized to the ARKStep callbacks (donor cvode_nls pattern).
+  ycor = step_mem->zcor, w = ark_mem->ewt.
+  ---------------------------------------------------------------*/
+fn arkStep_NlsSolveFixedPoint(
+    ark_mem: &mut ARKodeMem,
+    step_mem: &mut Box<ARKodeARKStepMem>,
+    fps: &mut FixedPointSolver,
+    tol: f64,
+) -> i32 {
+    /* initialize iteration and convergence fail counters for this solve */
+    fps.niters = 0;
+    fps.nconvfails = 0;
+
+    /* Looping point for attempts at solution of the nonlinear system:
+       Evaluate fixed-point function (store in gy).
+       Perform the accelerated fixed-point iteration.
+       Perform stopping tests. */
+    fps.curiter = 0;
+    while fps.curiter < fps.maxiters {
+        /* update previous solution guess */
+        fps.yprev.data.copy_from_slice(&step_mem.zcor.data);
+
+        /* compute fixed-point iteration function, store in gy */
+        {
+            let mut gy = std::mem::take(&mut fps.gy);
+            let retval = arkStep_NlsFPFunction(ark_mem, step_mem, fps.curiter, &mut gy);
+            fps.gy = gy;
+            if retval != 0 {
+                return retval;
+            }
+        }
+
+        /* perform fixed point update, based on choice of acceleration or not */
+        if fps.m == 0 {
+            /* basic fixed-point solver */
+            step_mem.zcor.data.copy_from_slice(&fps.gy.data);
+        } else {
+            /* Anderson-accelerated solver */
+            let mut zcor = std::mem::take(&mut step_mem.zcor);
+            let iter = fps.curiter;
+            fps.anderson_accelerate(&mut zcor, iter);
+            step_mem.zcor = zcor;
+        }
+
+        /* increment nonlinear solver iteration counter */
+        fps.niters += 1;
+
+        /* compute change in solution */
+        {
+            let ARKodeARKStepMem { zcor, .. } = &mut **step_mem;
+            N_VLinearSum(ONE, zcor, -ONE, &fps.yprev, &mut fps.delta);
+        }
+
+        /* test for convergence */
+        let retval = {
+            let delta = std::mem::take(&mut fps.delta);
+            let r = arkStep_NlsConvTest(ark_mem, step_mem, &delta, tol, fps.curiter);
+            fps.delta = delta;
+            r
+        };
+
+        /* return if successful */
+        if retval == SUN_SUCCESS {
+            return SUN_SUCCESS;
+        }
+
+        /* check if the iterations should continue; otherwise increment the
+           convergence failure count and return error flag */
+        if retval != SUN_NLS_CONTINUE {
+            fps.nconvfails += 1;
+            return retval;
+        }
+
+        fps.curiter += 1;
+    }
+
+    /* if we've reached this point, then we exhausted the iteration limit;
+       increment the convergence failure count and return */
+    fps.nconvfails += 1;
+    SUN_NLS_CONV_RECVR
+}
+
+/*---------------------------------------------------------------
+  arkStep_NlsFPFunction (MassIdent and the TrivialPredAutonomous
+  variant, selected by the same flags C uses in SetNlsSysFn)
+
+  This routine evaluates the fixed point iteration function for
+  the additive Runge-Kutta method (identity mass matrix):
+     Fi(z) (store in step_mem->Fi[step_mem->istage])
+     g = gamma*Fi(z) + step_mem->sdata
+
+  The "TrivialPredAutonomous" version reuses the implicit RHS
+  evaluation at the beginning of the step in the initial FP
+  function evaluation.
+  ---------------------------------------------------------------*/
+fn arkStep_NlsFPFunction(
+    ark_mem: &mut ARKodeMem,
+    step_mem: &mut Box<ARKodeARKStepMem>,
+    nls_iter: i32,
+    g: &mut NVector,
+) -> i32 {
+    let istage = step_mem.istage as usize;
+
+    /* update 'ycur' value as stored predictor + current corrector */
+    {
+        let ARKodeARKStepMem { zpred, zcor, .. } = &mut **step_mem;
+        N_VLinearSum(ONE, zpred, ONE, zcor, &mut ark_mem.ycur);
+    }
+
+    /* TrivialPredAutonomous variant: reuse the saved implicit RHS
+       evaluation on the first iteration */
+    let tpa = step_mem.predictor == 0
+        && step_mem.autonomous
+        && step_mem.mass_type == MASS_IDENTITY
+        && step_mem.fn_implicit != FnImplicitAlias::None;
+    if tpa && nls_iter == 0 {
+        match step_mem.fn_implicit {
+            FnImplicitAlias::Fi0 => {
+                let (head, tail) = step_mem.Fi.split_at_mut(istage);
+                tail[0].data.copy_from_slice(&head[0].data);
+            }
+            FnImplicitAlias::Tempv5 => {
+                step_mem.Fi[istage].data.copy_from_slice(&ark_mem.tempv5.data);
+            }
+            FnImplicitAlias::ArkFn => {
+                step_mem.Fi[istage].data.copy_from_slice(&ark_mem.fn_.data);
+            }
+            FnImplicitAlias::None => unreachable!(),
+        }
+    } else {
+        /* call the user-supplied pre-RHS function (if supplied), then call RHS */
+        if let Some(pre_rhs) = ark_mem.PreRhsFn {
+            let ARKodeMem { ycur, user_data, tcur, .. } = ark_mem;
+            let retval = pre_rhs(*tcur, ycur, user_data);
+            if retval != 0 {
+                return ARK_PRERHSFN_FAIL;
+            }
+        }
+        let nls_fi = step_mem.nls_fi.unwrap();
+        let ARKodeMem { ycur, user_data, tcur, .. } = ark_mem;
+        let retval = nls_fi(*tcur, ycur, &mut step_mem.Fi[istage], user_data);
+        step_mem.nfi += 1;
+        if retval < 0 {
+            return ARK_RHSFUNC_FAIL;
+        }
+        if retval > 0 {
+            return RHSFUNC_RECVR;
+        }
+    }
+
+    /* combine parts:  g = gamma*Fi(z) + sdata */
+    {
+        let ARKodeARKStepMem { sdata, Fi, gamma, .. } = &mut **step_mem;
+        N_VLinearSum(*gamma, &Fi[istage], ONE, sdata, g);
+    }
+
+    ARK_SUCCESS
 }

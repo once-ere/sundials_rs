@@ -19,3 +19,7 @@ path = "examples/ark_analytic.rs"
 [[example]]
 name = "ark_brusselator"
 path = "examples/ark_brusselator.rs"
+
+[[example]]
+name = "ark_brusselator_fp"
+path = "examples/ark_brusselator_fp.rs"

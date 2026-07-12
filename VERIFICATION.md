@@ -159,7 +159,7 @@ example.
 | ark_brusselator1D | todo |
 | ark_brusselator1D_imexmri | todo |
 | ark_brusselator_1D_mri | todo |
-| ark_brusselator_fp | todo |
+| ark_brusselator_fp | IDENTICAL (shipped ref; ImEx ARK pair + Anderson-accelerated fixed-point NLS + autonomous TPA reuse, verified byte-exact; the _fp_1 monitor-arg reference is byte-identical to the no-arg one and also passes) |
 | ark_brusselator_mri | todo |
 | ark_conserved_exp_entropy_ark | todo |
 | ark_conserved_exp_entropy_erk | todo |
