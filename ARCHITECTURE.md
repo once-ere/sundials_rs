@@ -481,3 +481,40 @@ arkode crate (arkode_impl.rs, pinned):
   every arkode_ls path follows the C massmem==NULL branch.
   ARKodeARKStepMem keeps mass_type (branch conditions) but defers
   the mass fn-pointer fields.
+
+## Addendum D — CVODES/IDAS adjoint + FSA example patterns (Phase 7, pinned)
+
+- **Error-weight snapshots for preconditioner callbacks.** C examples that
+  store the integrator pointer inside user data so Precond can call
+  CVodeGetErrWeights cannot do so in Rust (callbacks cannot reach the
+  integrator that owns them). Pinned replacement (donor cvsKrylovDemo_prec,
+  extended by cvsFoodWeb_ASA*_kry): install a user efun (CVodeWFtolerances)
+  that computes the SStolerances weights bit-for-bit
+  (w = 1/(rtol*|y| + atol), the exact cvEwtSetSS arithmetic) and snapshots
+  them into a user-data field; the snapshot always equals cv_ewt at
+  Precond time. For a BACKWARD problem the efun is installed directly on
+  the backward CVodeMem via CVodeGetAdjCVodeBmem + CVodeWFtolerances (the
+  exact composition CVodeSStolerancesB performs in C); during CVodeB that
+  memory's user_data is the forward CVodeMem, through which the efun
+  reaches cvB_mem[i].cv_user_data. Forward and backward snapshots live in
+  SEPARATE fields even when the C code reuses one scratch vector, because
+  C fetches at use time while the snapshot writes at ewt-set time.
+- **Shared user data across forward/backward problems.** When a C adjoint
+  example passes ONE struct pointer to both CVodeSetUserData and
+  CVodeSetUserDataB, that sharing can be load-bearing: during CVodeB,
+  checkpoint-replay forward f/Precond calls interleave with fB/PrecondB
+  writes to the same scratch fields (fsave, P blocks). Pinned solution
+  (cvsFoodWeb_ASAi_kry, verified bit-for-bit against an instrumented C
+  build): both user datas hold the same Rc<RefCell<WebData>>; callbacks
+  clone the Rc out of the &mut UserData and borrow_mut (callbacks never
+  nest, so borrows never overlap). Give each problem its own copy ONLY
+  when the C program allocates separate structs.
+- **ARKLS mass-matrix half** stays unported: its only example consumer is
+  ark_brusselator1D_FEM_slu (SuperLU-MT, hard-excluded backend).
+- **ARKODE adjoint stepper halves** (arkStep/erkStep TakeStep_*_Adjoint,
+  CreateAdjointStepper, SUNAdjointStepper wiring) stay unported: their
+  state vector is an NVector ManyVector composite, a workspace-wide
+  NVector-representation change. ASA is covered end-to-end by
+  cvodea/idaa instead (cvsLotkaVolterra_ASA runs the same problem as the
+  excluded ark_lotka_volterra_ASA).
+

@@ -859,5 +859,17 @@ halves stay unported. CVODES adjoint (cvodea) covers ASA end-to-end
 instead — see cvsLotkaVolterra_ASA, the same problem, verified LOCAL-C.)
 
 ## Phase 7 — docs
-- [ ] sundials.md — todo
-- [ ] final CLAUDE.md / ARCHITECTURE.md pass — todo
+- [x] sundials.md — committed (workspace-wide guide: the six solvers'
+      mathematics and algorithms, shared-core data structures, per-solver
+      API families, worked-example index, translation conventions,
+      verification story; cvode_rs/cvode.md remains the deep single-solver
+      companion)
+- [x] final CLAUDE.md / ARCHITECTURE.md pass — committed (ARCHITECTURE.md
+      Addendum D pins the adjoint efun-snapshot and Rc<RefCell> shared
+      user-data patterns and records the ARKLS-mass / ARKODE-adjoint
+      exclusion rationale; PROGRESS/VERIFICATION rows all closed)
+- [x] full-workspace sweep — 158 harness rows: 94 IDENTICAL + 59 LOCAL-C
+      (committed localref/) + 4 documented exceptions (cv/cvsRoberts_dnsL
+      LAPACK-format refs; idasSlCrank_dns/_FSA_dns example-internal sincos
+      flag-fragility) + solar_system (Rust-only, self-checking); workspace
+      builds warning-free; cargo test green (14 suites)

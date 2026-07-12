@@ -24,7 +24,9 @@ The original verified CVODE port `../cvode_rs/` is a read-only donor.
   prelude so examples can `use <crate>::*;` like a C `#include`.
 - `ARCHITECTURE.md` — pinned cross-module contracts; read before touching
   cross-module types. `PROGRESS.md` — per-file port status. `VERIFICATION.md`
-  — per-example verification matrix. Keep both current.
+  — per-example verification matrix. Keep both current. `sundials.md` —
+  user-facing guide to the whole workspace (update if public API surface
+  or solver coverage changes).
 
 ## Hard rules
 
