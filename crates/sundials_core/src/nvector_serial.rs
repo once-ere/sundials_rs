@@ -171,6 +171,19 @@ pub fn N_VConst(c: f64, z: &mut NVector) {
     }
 }
 
+/// Print vector to stdout (C N_VPrint_Serial: one element per line,
+/// SUN_FORMAT_E = "% .15e" — space flag pads non-negative values)
+pub fn N_VPrint(x: &NVector) {
+    for i in 0..x.data.len() {
+        let s = crate::sundials_utils::fmt_e(x.data[i], 0, 15);
+        if s.starts_with('-') {
+            println!("{}", s);
+        } else {
+            println!(" {}", s);
+        }
+    }
+}
+
 /// z = x .* y
 pub fn N_VProd(x: &NVector, y: &NVector, z: &mut NVector) {
     for i in 0..z.data.len() {
