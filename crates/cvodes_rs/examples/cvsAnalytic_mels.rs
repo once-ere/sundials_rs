@@ -21,6 +21,7 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 
+use cvodes_rs::cvodes_cli::CVodeSetOptions;
 use cvodes_rs::sundials_utils::{fmt_e, fmt_f, fmt_g};
 use cvodes_rs::*;
 
@@ -154,6 +155,13 @@ fn main() {
         None,
     );
     if check_retval(retval, "CVodeSetLinearSolver") {
+        std::process::exit(1);
+    }
+
+    /* Override any current settings with command-line options */
+    let args: Vec<String> = std::env::args().collect();
+    retval = CVodeSetOptions(&mut cvode_mem, "", "", &args);
+    if check_retval(retval, "CVodeSetOptions") {
         std::process::exit(1);
     }
 

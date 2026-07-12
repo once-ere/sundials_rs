@@ -93,7 +93,7 @@ verify_crate() {
     # verified manually (see VERIFICATION.md) and several use ambiguous
     # encodings.  Skip files that belong to a LONGER example name
     # sharing this prefix.
-    if [ "$crate" = "idas_rs" ] || [ "$crate" = "arkode_rs" ]; then
+    if [ "$crate" = "idas_rs" ] || [ "$crate" = "arkode_rs" ] || [ "$crate" = "cvodes_rs" ]; then
       local vref
       for vref in "$refdir/${name}_"*.out; do
         [ -f "$vref" ] || continue

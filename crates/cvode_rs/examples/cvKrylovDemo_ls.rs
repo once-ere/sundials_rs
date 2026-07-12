@@ -536,7 +536,9 @@ fn PSolve(
 
 fn main() {
     let mut nrmfactor = 0; /* LS norm conversion factor flag */
-    let mut monitor = 0; /* LS residual monitoring flag    */
+    let mut monitor = 0; /* LS residual monitoring flag (C routes SUNLogger
+                          info output to a file; the logger is not ported,
+                          so the flag is accepted but has no effect) */
 
     /* Retrieve the command-line options */
     let args: Vec<String> = std::env::args().collect();
@@ -546,6 +548,8 @@ fn main() {
     if args.len() > 2 {
         monitor = args[2].parse::<i32>().unwrap_or(0);
     }
+
+    let _ = monitor;
 
     /* Create the SUNDIALS context (the SUNLogger used for residual
      * monitoring in the C original is not ported) */
@@ -732,16 +736,11 @@ fn main() {
         let mut tout = TWOHR;
         for _iout in 1..=NOUT {
             retval = CVode(&mut cvode_mem, tout, &mut u, &mut t, CV_NORMAL);
-            if monitor == 0 {
-                PrintOutput(&mut cvode_mem, &u, t);
-            }
+            PrintOutput(&mut cvode_mem, &u, t);
             if check_retval(retval, "CVode") {
                 break;
             }
             tout += TWOHR;
-        }
-        if monitor != 0 {
-            PrintOutput(&mut cvode_mem, &u, t);
         }
         PrintStats(&mut cvode_mem, linsolver, 1);
     } /* END: Loop through SPGMR, SPFGMR, SPBCG and SPTFQMR linear solver modules */
