@@ -120,7 +120,7 @@ pub fn ARKStepCreate(
     ark_mem.step_getnumnonlinsolvconvfails =
         Some(crate::arkode_arkstep_io::arkStep_GetNumNonlinSolvConvFails);
     ark_mem.step_getnonlinsolvstats = Some(crate::arkode_arkstep_io::arkStep_GetNonlinSolvStats);
-    ark_mem.step_setforcing = None; /* arkStep_SetInnerForcing: with MRIStep */
+    ark_mem.step_setforcing = Some(arkStep_SetInnerForcing);
     ark_mem.step_getstageindex = Some(crate::arkode_arkstep_io::arkStep_GetStageIndex);
     ark_mem.step_supports_adaptive = true;
     ark_mem.step_supports_implicit = true;
@@ -1161,6 +1161,12 @@ fn arkStep_FullRHS_inner(
                     return ARK_MASSSOLVE_FAIL;
                 }
             }
+
+            /* apply external polynomial (MRI) forcing (M = I required) */
+            if step_mem.expforcing || step_mem.impforcing {
+                let vals = arkStep_ApplyForcing_coeffs(step_mem, &[t], &[ONE], 1);
+                ark_accumulate_forcing(step_mem, &vals, f);
+            }
         }
 
         ARK_FULLRHS_OTHER => {
@@ -1253,6 +1259,12 @@ fn arkStep_FullRHS_inner(
                     );
                     return ARK_MASSSOLVE_FAIL;
                 }
+            }
+
+            /* apply external polynomial (MRI) forcing (M = I required) */
+            if step_mem.expforcing || step_mem.impforcing {
+                let vals = arkStep_ApplyForcing_coeffs(step_mem, &[t], &[ONE], 1);
+                ark_accumulate_forcing(step_mem, &vals, f);
             }
         }
 
@@ -2425,12 +2437,30 @@ pub(crate) fn arkStep_StageSetup(
         }
     }
 
-    /* (external polynomial MRI forcing: pending with MRIStep) */
+    /* apply external polynomial (MRI) forcing (M = I required) */
+    if step_mem.expforcing || step_mem.impforcing {
+        let (jmax, is_exp) = if step_mem.expforcing { (i, true) } else { (i + 1, false) };
+        let mut stage_times: Vec<f64> = Vec::with_capacity(jmax);
+        let mut stage_coefs: Vec<f64> = Vec::with_capacity(jmax);
+        {
+            let b = if is_exp {
+                step_mem.Be.as_ref().unwrap()
+            } else {
+                step_mem.Bi.as_ref().unwrap()
+            };
+            for j in 0..jmax {
+                stage_times.push(ark_mem.tn + b.c[j] * ark_mem.h);
+                stage_coefs.push(ark_mem.h * b.A[i][j]);
+            }
+        }
+        let vals = arkStep_ApplyForcing_coeffs(step_mem, &stage_times, &stage_coefs, jmax);
+        cv.extend_from_slice(&vals);
+    }
 
     /* call fused vector operation to do the work */
     if implicit {
         /* z == X[0] with c0 == 1: in-place accumulate form */
-        let ARKodeARKStepMem { sdata, Fe, Fi, .. } = step_mem;
+        let ARKodeARKStepMem { sdata, Fe, Fi, forcing, .. } = step_mem;
         let mut xr: Vec<&NVector> = Vec::new();
         if step_mem.explicit {
             for j in 0..i {
@@ -2440,11 +2470,16 @@ pub(crate) fn arkStep_StageSetup(
         if step_mem.implicit {
             for j in 0..i {
                 xr.push(&Fi[j]);
+            }
+        }
+        if step_mem.expforcing || step_mem.impforcing {
+            for v in forcing.iter() {
+                xr.push(v);
             }
         }
         ark_lincomb_accumulate(&cv[1..], &xr, sdata);
     } else {
-        let ARKodeARKStepMem { sdata, Fe, Fi, .. } = step_mem;
+        let ARKodeARKStepMem { sdata, Fe, Fi, forcing, .. } = step_mem;
         let mut xr: Vec<&NVector> = Vec::new();
         if step_mem.explicit {
             for j in 0..i {
@@ -2454,6 +2489,11 @@ pub(crate) fn arkStep_StageSetup(
         if step_mem.implicit {
             for j in 0..i {
                 xr.push(&Fi[j]);
+            }
+        }
+        if step_mem.expforcing || step_mem.impforcing {
+            for v in forcing.iter() {
+                xr.push(v);
             }
         }
         N_VLinearCombination(cv.len() as i32, &cv, &xr, sdata);
@@ -2472,6 +2512,121 @@ fn ark_lincomb_accumulate(cvals: &[f64], xvecs: &[&NVector], z: &mut NVector) {
             z.data[e] += val * xvecs[k].data[e];
         }
     }
+}
+
+/*------------------------------------------------------------------------------
+  arkStep_ApplyForcing
+
+  Determines the scaling values necessary for the MRI polynomial
+  forcing terms.  C appends the values and N_Vector pointers to the
+  cvals/Xvecs arrays; the Rust port returns the scaling values (the
+  forcing vectors are appended to the operand list at the call site).
+  ----------------------------------------------------------------------------*/
+fn arkStep_ApplyForcing_coeffs(
+    step_mem: &ARKodeARKStepMem,
+    stage_times: &[f64],
+    stage_coefs: &[f64],
+    jmax: usize,
+) -> Vec<f64> {
+    let nforcing = step_mem.nforcing as usize;
+    let mut vals = vec![ZERO; nforcing];
+
+    for j in 0..jmax {
+        let tau = (stage_times[j] - step_mem.tshift) / step_mem.tscale;
+        let mut taui = ONE;
+
+        for k in 0..nforcing {
+            vals[k] += stage_coefs[j] * taui;
+            taui *= tau;
+        }
+    }
+
+    vals
+}
+
+/// z += sum_k vals[k] * forcing[k] — the z == X[0], c[0] == 1 branch
+/// of the C N_VLinearCombination kernel used when applying forcing
+/// to a full-RHS output.
+fn ark_accumulate_forcing(step_mem: &ARKodeARKStepMem, vals: &[f64], f: &mut NVector) {
+    for (k, val) in vals.iter().enumerate() {
+        for e in 0..f.data.len() {
+            f.data[e] += val * step_mem.forcing[k].data[e];
+        }
+    }
+}
+
+/*------------------------------------------------------------------------------
+  arkStep_SetInnerForcing
+
+  Sets an array of coefficient vectors for a time-dependent external polynomial
+  forcing term in the ODE RHS i.e., y' = fe(t,y) + fi(t,y) + p(t). This
+  function is primarily intended for use with multirate integration methods
+  (e.g., MRIStep) where ARKStep is used to solve a modified ODE at a fast time
+  scale. The polynomial is of the form
+
+  p(t) = sum_{i = 0}^{nvecs - 1} forcing[i] * ((t - tshift) / (tscale))^i
+
+  where tshift and tscale are used to normalize the time t (e.g., with MRIGARK
+  methods).  The C code stores the caller's vector-array pointer, the
+  Rust port stores owned copies.
+  ----------------------------------------------------------------------------*/
+pub fn arkStep_SetInnerForcing(
+    ark_mem: &mut ARKodeMem,
+    tshift: f64,
+    tscale: f64,
+    forcing: &[NVector],
+    nvecs: i32,
+) -> i32 {
+    /* access ARKodeARKStepMem structure */
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "arkStep_SetInnerForcing") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    if nvecs > 0 {
+        /* enable forcing */
+        if step_mem.explicit {
+            step_mem.expforcing = true;
+            step_mem.impforcing = false;
+        } else {
+            step_mem.expforcing = false;
+            step_mem.impforcing = true;
+        }
+        step_mem.tshift = tshift;
+        step_mem.tscale = tscale;
+        step_mem.forcing = forcing.to_vec();
+        step_mem.nforcing = nvecs;
+
+        /* If cvals and Xvecs are not allocated then arkStep_Init has not been
+           called and the number of stages has not been set yet. These arrays will
+           be allocated in arkStep_Init and take into account the value of nforcing.
+           On subsequent calls will check if enough space has allocated in case
+           nforcing has increased since the original allocation. */
+        if !step_mem.cvals.is_empty()
+            && (step_mem.nfusedopvecs - nvecs) < (2 * step_mem.stages + 2)
+        {
+            /* free current work space */
+            ark_mem.lrw -= step_mem.nfusedopvecs as i64;
+            ark_mem.liw -= step_mem.nfusedopvecs as i64;
+
+            /* allocate reusable arrays for fused vector operations */
+            step_mem.nfusedopvecs = 2 * step_mem.stages + 2 + nvecs;
+            step_mem.cvals = vec![ZERO; step_mem.nfusedopvecs as usize];
+            ark_mem.lrw += step_mem.nfusedopvecs as i64;
+            ark_mem.liw += step_mem.nfusedopvecs as i64;
+        }
+    } else {
+        /* disable forcing */
+        step_mem.expforcing = false;
+        step_mem.impforcing = false;
+        step_mem.tshift = ZERO;
+        step_mem.tscale = ONE;
+        step_mem.forcing = Vec::new();
+        step_mem.nforcing = 0;
+    }
+
+    ark_mem.step_mem = Some(step_mem);
+    ARK_SUCCESS
 }
 
 /*---------------------------------------------------------------
@@ -2526,7 +2681,25 @@ pub(crate) fn arkStep_ComputeSolutions(
             }
         }
 
-        /* (external polynomial MRI forcing: pending with MRIStep) */
+        /* apply external polynomial (MRI) forcing (M = I required) */
+        if step_mem.expforcing || step_mem.impforcing {
+            let stages = step_mem.stages as usize;
+            let mut stage_times: Vec<f64> = Vec::with_capacity(stages);
+            let mut stage_coefs: Vec<f64> = Vec::with_capacity(stages);
+            {
+                let b = if step_mem.expforcing {
+                    step_mem.Be.as_ref().unwrap()
+                } else {
+                    step_mem.Bi.as_ref().unwrap()
+                };
+                for j in 0..stages {
+                    stage_times.push(ark_mem.tn + b.c[j] * ark_mem.h);
+                    stage_coefs.push(ark_mem.h * b.b[j]);
+                }
+            }
+            let vals = arkStep_ApplyForcing_coeffs(step_mem, &stage_times, &stage_coefs, stages);
+            cv.extend_from_slice(&vals);
+        }
 
         /*   call fused vector operation to do the work */
         {
@@ -2538,6 +2711,11 @@ pub(crate) fn arkStep_ComputeSolutions(
                 }
                 if step_mem.implicit {
                     xr.push(&step_mem.Fi[j]);
+                }
+            }
+            if step_mem.expforcing || step_mem.impforcing {
+                for v in step_mem.forcing.iter() {
+                    xr.push(v);
                 }
             }
             N_VLinearCombination(cv.len() as i32, &cv, &xr, ycur);
@@ -2571,7 +2749,26 @@ pub(crate) fn arkStep_ComputeSolutions(
             }
         }
 
-        /* (external polynomial MRI forcing: pending with MRIStep) */
+        /* apply external polynomial (MRI) forcing (M = I required) */
+        if step_mem.expforcing || step_mem.impforcing {
+            let stages = step_mem.stages as usize;
+            let mut stage_times: Vec<f64> = Vec::with_capacity(stages);
+            let mut stage_coefs: Vec<f64> = Vec::with_capacity(stages);
+            {
+                let b = if step_mem.expforcing {
+                    step_mem.Be.as_ref().unwrap()
+                } else {
+                    step_mem.Bi.as_ref().unwrap()
+                };
+                let d = b.d.as_ref().unwrap();
+                for j in 0..stages {
+                    stage_times.push(ark_mem.tn + b.c[j] * ark_mem.h);
+                    stage_coefs.push(ark_mem.h * (b.b[j] - d[j]));
+                }
+            }
+            let vals = arkStep_ApplyForcing_coeffs(step_mem, &stage_times, &stage_coefs, stages);
+            cv.extend_from_slice(&vals);
+        }
 
         /* call fused vector operation to do the work */
         {
@@ -2583,6 +2780,11 @@ pub(crate) fn arkStep_ComputeSolutions(
                 }
                 if step_mem.implicit {
                     xr.push(&step_mem.Fi[j]);
+                }
+            }
+            if step_mem.expforcing || step_mem.impforcing {
+                for v in step_mem.forcing.iter() {
+                    xr.push(v);
                 }
             }
             N_VLinearCombination(cv.len() as i32, &cv, &xr, tempv1);

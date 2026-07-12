@@ -2700,6 +2700,36 @@ pub fn ARKodeEvolve(
 }
 
 /*---------------------------------------------------------------
+  ARKodeReset:
+
+  This routine resets an ARKode module to solve the same
+  problem from the given time with the input state (all counter
+  values are retained).
+  ---------------------------------------------------------------*/
+pub fn ARKodeReset(ark_mem: &mut ARKodeMem, tR: f64, yR: &NVector) -> i32 {
+    /* Reset main ARKODE infrastructure */
+    let retval = arkInit(ark_mem, tR, yR, crate::arkode_impl::RESET_INIT);
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "ARKodeReset",
+            file!(),
+            "ARKode reset failure",
+        );
+        return retval;
+    }
+
+    /* Call stepper routine to perform remaining reset operations (if provided) */
+    if let Some(step_reset) = ark_mem.step_reset {
+        return step_reset(ark_mem, tR, yR);
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
   ARKodeSStolerances, ARKodeSVtolerances, ARKodeWFtolerances:
 
   These functions specify the integration tolerances. One of them

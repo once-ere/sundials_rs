@@ -288,6 +288,114 @@ pub fn ARKodeSetFixedStep(ark_mem: &mut ARKodeMem, hfixed: f64) -> i32 {
 }
 
 /*---------------------------------------------------------------
+  ARKodeSetStepDirection:
+
+  Specifies the direction of integration (forward or backward)
+  based on the sign of stepdir. If 0, the direction will remain
+  unchanged. Note that if a fixed step size was previously set,
+  this function can change the sign of that.
+
+  This should only be called after ARKodeReset, or between
+  creating a stepper and ARKodeEvolve.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetStepDirection(ark_mem: &mut ARKodeMem, stepdir: f64) -> i32 {
+    /* stepdir is a sunrealtype because the direction typically comes from a time
+     * step h or tend-tstart which are sunrealtypes. If stepdir was in int,
+     * conversions would be required which can cause undefined behavior when
+     * greater than MAX_INT */
+    use crate::arkode_impl::{arkProcessError, ARK_CONTROLLER_ERR, ARK_STEP_DIRECTION_ERR};
+    use crate::sundials_math::SUNRcopysign;
+
+    /* do not change direction once the module has been initialized i.e., after calling
+       ARKodeEvolve unless ReInit or Reset are called. */
+    if !ark_mem.initsetup {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEP_DIRECTION_ERR,
+            line!(),
+            "ARKodeSetStepDirection",
+            file!(),
+            "Step direction cannot be specified after module initialization.",
+        );
+        return ARK_STEP_DIRECTION_ERR;
+    }
+
+    if stepdir != ZERO {
+        let mut h = ZERO;
+        let retval = ARKodeGetStepDirection(ark_mem, &mut h);
+        if retval != ARK_SUCCESS {
+            arkProcessError(
+                Some(ark_mem),
+                retval,
+                line!(),
+                "ARKodeSetStepDirection",
+                file!(),
+                "Unable to access step direction",
+            );
+            return retval;
+        }
+
+        if h != SUNRcopysign(h, stepdir) {
+            /* Reverse the sign of h. If adaptive, h will be overwritten anyway by the
+             * initial step estimation since ARKodeReset must be called before this.
+             * However, the sign of h will be used to check if the integration
+             * direction and stop time are consistent, e.g., in ARKodeSetStopTime, so
+             * we should not set h = 0. */
+            ark_mem.h = -h;
+            /* Clear previous initial step and force an initial step recomputation.
+             * Normally, this would not occur after a reset, but it is necessary here
+             * because the timestep used in one direction may not be suitable for the
+             * other */
+            ark_mem.h0u = ZERO;
+            /* Reverse the step if in fixed mode. If adaptive, reset to 0 to clear any
+             * old value from a call to ARKodeSetInit */
+            ark_mem.hin = if ark_mem.fixedstep { -h } else { ZERO };
+
+            /* Reset error controller (e.g., error and step size history) */
+            if let Some(hadapt_mem) = ark_mem.hadapt_mem.as_mut() {
+                if let Some(hcontroller) = hadapt_mem.hcontroller.as_mut() {
+                    let err =
+                        crate::sundials_adaptcontroller::SUNAdaptController_Reset(hcontroller);
+                    if err != crate::sundials_errors::SUN_SUCCESS {
+                        arkProcessError(
+                            Some(ark_mem),
+                            ARK_CONTROLLER_ERR,
+                            line!(),
+                            "ARKodeSetStepDirection",
+                            file!(),
+                            "Unable to reset error controller object",
+                        );
+                        return ARK_CONTROLLER_ERR;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(step_setstepdirection) = ark_mem.step_setstepdirection {
+        return step_setstepdirection(ark_mem, stepdir);
+    }
+
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetStepDirection:
+
+  Gets the direction of integration (forward or backward) based
+  on the sign of stepdir. A value of 0 indicates integration can
+  proceed in either direction.
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetStepDirection(ark_mem: &mut ARKodeMem, stepdir: &mut f64) -> i32 {
+    *stepdir = if ark_mem.fixedstep || ark_mem.h == ZERO {
+        ark_mem.hin
+    } else {
+        ark_mem.h
+    };
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
   ARKodeSetMaxNumSteps:
 
   Specifies the maximum number of integration steps

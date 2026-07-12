@@ -45,6 +45,15 @@ pub fn SUNRround(x: f64) -> f64 {
     x.round()
 }
 
+/// SUNIpowerI: integer base^exponent via repeated multiplication.
+pub fn SUNIpowerI(base: i32, exponent: i32) -> i32 {
+    let mut prod: i32 = 1;
+    for _ in 1..=exponent {
+        prod *= base;
+    }
+    prod
+}
+
 /// SUNRpowerI: base^exponent via repeated multiplication (kept loop-exact
 /// with the C source so results match bit-for-bit).
 pub fn SUNRpowerI(base: f64, exponent: i32) -> f64 {

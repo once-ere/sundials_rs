@@ -149,12 +149,9 @@ example.
 | ark_advection_diffusion_reaction_splitting | todo |
 | ark_analytic | IDENTICAL (shipped ref; first implicit ARKStep example — DIRK + Newton + dense ARKLS + SetLinear, verified byte-exact). Arg-variant refs (table_names override) pending the CLI module |
 | ark_analytic_lsrk (+_varjac, _domeigest, _domeigest arg variant, _ssprk) | LOCAL-C x5 (byte-identical to fresh 7.7.0 C build incl. all stats; shipped refs stale; covers RKL/RKC STS with user dom-eig fn, power-iteration SUNDomEigEstimator with warmup/max_iters options, and the SSP(9,3) path) |
-| ark_analytic_lsrk_domeigest | todo |
-| ark_analytic_lsrk_varjac | todo |
 | ark_analytic_mels | todo |
 | ark_analytic_nonlin | IDENTICAL (shipped ref; the FIRST arkode example, verified byte-exact) |
-| ark_analytic_partitioned | todo |
-| ark_analytic_ssprk | todo |
+| ark_analytic_partitioned | LOCAL-C x5 (splitting default, forcing, and BEST_2_2_2/RUTH_3_3_2/YOSHIDA_8_6_2 named-coefficient variants all byte-identical to a fresh 7.7.0 C build; shipped refs predate the SUN_TABLE_WIDTH 28->29 change; exercises SplittingStep + ForcingStep over ERKStep/ARKStep-backed SUNSteppers incl. ARKStep inner forcing) |
 | ark_brusselator | IDENTICAL (shipped ref; exercises deduce_rhs + SetAutonomous/TrivialPredAutonomous residual + Lagrange interpolant + Newton failure-retry paths, verified byte-exact) |
 | ark_brusselator1D | todo |
 | ark_brusselator1D_imexmri | todo |

@@ -807,8 +807,8 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_butcher_dirk.c (+ .def) — committed (27 tables; DIRK+ERK ARK-pair CheckARKOrder validated against ark_test_butcher.out)
 - [x] arkode_interp_impl.h — committed (Hermite/Lagrange content structs; generic ARKInterp enum lives in arkode_impl.rs)
 - [x] arkode_interp.c — committed (dispatchers take ark_mem only, take/put-back on ark_mem.interp; Hermite quartic/quintic bootstrap recurses on the impl; LBasis family spans full nhist as in C; polynomial-exactness tests)
-- [ ] arkode.c — PARTS I-II committed (vector utils, ARKodeGetDky, arkCreate, arkEwtSetSS/SV/SmallReal + arkRwtSet family with donor in-place idiom; efun=None means internal dispatch). PART III adds arkInit + arkCheckTimestepper/Nvector + arkAllocVectors/arkFreeVectors (rwt_is_ewt = rwt left unallocated). PART V adds the full Evolve chain: ARKodeEvolve, arkInitialSetup, arkStopTests, arkCompleteStep, arkHandleFailure, arkCheckConvergence/Constraints/TemporalError, ark_rfun_apply_yn (relaxation call site stubs to ARK_RELAX_MEM_NULL until arkode_relaxation.c lands). PART VI adds ARKodeSStolerances/SVtolerances/WFtolerances + ARKodeFree; arkode_io.rs PART II adds SetUserData/SetInitStep/SetFixedStep/SetMaxNumSteps/SetStopTime/SetInterpolantDegree. Remaining: Reset/Resize/predictors/remaining io Set-Get families
-- [ ] arkode_io.c — PARTS I-III committed (SetDefaults, essential setters, arkReplaceAdaptController, ARKodePrintAllStats + sunfprintf helpers). Remaining: remaining Set/Get families, WriteParameters, SetOptions CLI
+- [ ] arkode.c — PARTS I-II committed (vector utils, ARKodeGetDky, arkCreate, arkEwtSetSS/SV/SmallReal + arkRwtSet family with donor in-place idiom; efun=None means internal dispatch). PART III adds arkInit + arkCheckTimestepper/Nvector + arkAllocVectors/arkFreeVectors (rwt_is_ewt = rwt left unallocated). PART V adds the full Evolve chain: ARKodeEvolve, arkInitialSetup, arkStopTests, arkCompleteStep, arkHandleFailure, arkCheckConvergence/Constraints/TemporalError, ark_rfun_apply_yn (relaxation call site stubs to ARK_RELAX_MEM_NULL until arkode_relaxation.c lands). PART VI adds ARKodeSStolerances/SVtolerances/WFtolerances + ARKodeFree; arkode_io.rs PART II adds SetUserData/SetInitStep/SetFixedStep/SetMaxNumSteps/SetStopTime/SetInterpolantDegree. PART VII adds ARKodeReset (arkInit RESET_INIT + optional step_reset op). Remaining: Resize/predictors/remaining io Set-Get families
+- [ ] arkode_io.c — PARTS I-III committed (SetDefaults, essential setters, arkReplaceAdaptController, ARKodePrintAllStats + sunfprintf helpers). PART IV adds ARKodeSetStepDirection/ARKodeGetStepDirection (controller reset + step_setstepdirection op dispatch). Remaining: remaining Set/Get families, WriteParameters, SetOptions CLI
 - [x] arkode_adapt_impl.h — committed (ARKodeHAdaptMem struct + adaptivity constants)
 - [x] arkode_adapt.c — committed (arkAdapt signature drops the always-ark_mem-derived hadapt_mem/ycur args per Addendum C.1; SUNRcopysign added to sundials_math)
 - [x] arkode_root_impl.h — committed (ARKodeRootMem struct, C int*/realtype* arrays -> Vec)
@@ -822,24 +822,24 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [ ] arkode_arkstep.c — PART I committed (ARKStepCreate/ReInit, arkStep Init/FullRHS/TakeStep_Z/ComputeState/Free/PrintMem, AttachLinsol/DisableLSetup/GetLmem/GetImplicitRHS/GetGammas + Rust-only SetJcur, SetButcherTables/CheckButcherTables, Predict (arkPredict_* ported into arkode.rs), StageSetup, ComputeSolutions; identity-mass paths — mass branches follow C's NULL paths). Deferred: TakeStep_ERK_Adjoint/fe_Adj/CreateAdjointStepper (adjoint), AttachMasssol/mass init-setup (ARKLS mass half), Resize/Reset, SetInnerForcing/ApplyForcing (MRIStep), RelaxDeltaE (relaxation)
 - [ ] arkode_arkstep_io.c — PART I committed (arkStep_SetDefaults + full Set/Get op families, PrintAllStats, WriteParameters, ARKStepGetNumRhsEvals/GetCurrentButcherTables/GetTimestepperStats; arkode_io.rs gained the ARKodeSet/Get implicit-solver dispatch wrappers + ARKodeWriteParameters + ARKodeGetNumSteps/StepAttempts/ErrTestFails). PART II adds ARKStepSetExplicit/SetImplicit/SetImEx (with tolerance re-attach), ARKStepSetTables/SetTableNum/SetTableName; arkode_io.rs gains ARKodeSetInterpolantType + ARKodeGetNumStepSolveFails + ARKodeSetMaxErrTestFails + ARKodeGetNumGEvals/GetRootInfo. Remaining: SetOptions (CLI), SetRelaxFn (relaxation), deprecated ARKStep* aliases
 - [ ] arkode_arkstep_nls.c — PART I committed (SetNonlinearSolver/SetNlsRhsFn/SetNlsSysFn/GetNonlinearSystemData, NlsInit, Nls + inlined SUNNonlinSolSolve_Newton loop with ARKStep Sys/LSetup/LSolve/CTest callbacks; residual MassIdent + TrivialPredAutonomous variants; lsetup/lsolve wrappers re-install step_mem around ARKLS op re-entries). PART II adds the inlined SUNNonlinSolSolve_FixedPoint loop (Anderson acceleration via the core FixedPointSolver) + arkStep_NlsFPFunction MassIdent/TrivialPredAutonomous variants. Deferred: MassFixed/MassTDep residual and FP variants (ARKLS mass half)
-- [ ] arkode_sprk.c — todo
-- [ ] arkode_sprkstep_impl.h — todo
-- [ ] arkode_sprkstep.c — todo
-- [ ] arkode_sprkstep_io.c — todo
-- [ ] arkode_lsrkstep_impl.h — todo
-- [ ] arkode_lsrkstep.c — todo
-- [ ] arkode_lsrkstep_io.c — todo
+- [x] arkode_sprk.c — committed (all SPRK tables via X-macro match; ARKodeSPRKTable_ToButcher with C's outer-loop-runs-once variable-reuse quirk replicated straight-line)
+- [x] arkode_sprkstep_impl.h — committed (ARKodeSPRKStepMem; yerr/compensated-sum fields)
+- [x] arkode_sprkstep.c — committed (SPRKStepCreate/ReInit, sprkStep Init/FullRHS/TakeStep + compensated-sums TakeStep variant, Resize/Free/PrintMem; verified via the 13 ark_kepler references)
+- [x] arkode_sprkstep_io.c — committed (SetDefaults/SetOrder/SetMethod/SetMethodName/SetUseCompensatedSums + Get families/PrintAllStats/WriteParameters)
+- [x] arkode_lsrkstep_impl.h — committed (ARKodeLSRKStepMem; STS/SSP method enums + dom-eig state)
+- [x] arkode_lsrkstep.c — committed (LSRKStepCreateSTS/SSP/ReInit, RKC/RKL takestep with parity-tracked tempv1/tempv2 swap, SSP s2/s3/43/104, dom-eig update machinery with per-call ATimes closure over the core SUNDomEigEstimator, ARK_RETRY_STEP wiring)
+- [x] arkode_lsrkstep_io.c — committed (LSRKStepSet* STS/SSP option families + DomEig fn/frequency/safety + Get/PrintAllStats/WriteParameters)
 - [ ] arkode_mri_tables.c (+ .def) — todo
 - [ ] arkode_mristep_impl.h — todo
 - [ ] arkode_mristep.c — todo
 - [ ] arkode_mristep_io.c — todo
 - [ ] arkode_mristep_nls.c — todo
 - [ ] arkode_mristep_controller.c — todo
-- [ ] arkode_splittingstep_coefficients.c (+ .def) — todo
-- [ ] arkode_splittingstep_impl.h — todo
-- [ ] arkode_splittingstep.c — todo
-- [ ] arkode_forcingstep_impl.h — todo
-- [ ] arkode_forcingstep.c — todo
+- [x] arkode_splittingstep_coefficients.c (+ .def) — committed (SplittingStepCoefficientsMem as nested Vec beta[i][j][k]; Alloc/Create/Copy/Destroy/Load by ID+name/IDToName/Write + LieTrotter/Strang/Parallel/SymmetricParallel/ThirdOrderSuzuki/TripleJump/SuzukiFractal; recursive ComposeStrangHelper ported as row-offset recursion; SUNIpowerI added to sundials_math)
+- [x] arkode_splittingstep_impl.h — committed (ARKodeSplittingStepMem; SUNStepper* array -> owning Vec<SUNStepper>)
+- [x] arkode_splittingstep.c — committed (SplittingStepCreate/ReInit/SetCoefficients/GetNumEvolves + splittingStep Init/FullRHS/SequentialMethod/TakeStep/PrintAllStats/WriteParameters/Free/PrintMem/SetOrder/GetStageIndex/SetOptions/SetDefaults; TakeStep mem::takes ycur+tempv1 around the inner SUNStepper evolves; ensure_ycur)
+- [x] arkode_forcingstep_impl.h — committed (ARKodeForcingStepMem; owning [SUNStepper; 2])
+- [x] arkode_forcingstep.c — committed (ForcingStepCreate/ReInit/GetNumEvolves + forcingStep Init/Reset/SetStepDirection/FullRHS/TakeStep/PrintAllStats/Free/PrintMem; tendency forcing (ycur-yn)/h fed to stepper 2 via SUNStepper_SetForcing)
 - [ ] arkode_bandpre_impl.h — todo
 - [ ] arkode_bandpre.c — todo
 - [ ] arkode_bbdpre_impl.h — todo
@@ -847,7 +847,7 @@ idasRoberts_FSA_klu, idasRoberts_FSA_sps (KLU/SuperLU)
 - [x] arkode_relaxation_impl.h — committed (ARKodeRelaxMem struct + delta-E/get-order fn types)
 - [ ] arkode_relaxation.c — todo
 - [ ] arkode_user_controller.c/.h — todo
-- [ ] arkode_sunstepper.c — todo
+- [x] arkode_sunstepper.c — committed (ARKodeCreateSUNStepper wraps a Box<ARKodeMem> as owned SUNStepper content; evolve/onestep/fullrhs/reset/stoptime/stepdirection/setforcing/getnumsteps ops; ResetCheckpointIndex skipped with the adjoint; arkStep_SetInnerForcing/ApplyForcing ported into arkode_arkstep.rs (StageSetup/ComputeSolutions/FullRHS forcing appends) so ARKStep-backed steppers support forcing)
 - [ ] arkode_cli.c — todo
 ### excluded (arkode)
 xbraid/ (XBraid); fmod_* (Fortran)

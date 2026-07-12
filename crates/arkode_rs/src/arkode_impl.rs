@@ -944,6 +944,7 @@ pub const MSG_ARK_ARKMEM_FAIL: &str = "Allocation of arkode_mem failed.";
 pub const MSG_ARK_MEM_FAIL: &str = "A memory request failed.";
 pub const MSG_ARK_NO_MALLOC: &str = "Attempt to call before ARKODE initialized.";
 pub const MSG_ARK_NULL_Y0: &str = "y0 = NULL illegal.";
+pub const MSG_ARK_NULL_SUNCTX: &str = "sunctx = NULL illegal.";
 pub const MSG_ARK_NULL_F: &str = "Must specify at least one of fe, fi (both NULL).";
 pub const MSG_ARK_NULL_G: &str = "g = NULL illegal.";
 pub const MSG_ARK_NULL_DKY: &str = "dky = NULL illegal.";

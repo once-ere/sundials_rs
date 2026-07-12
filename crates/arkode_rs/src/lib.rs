@@ -103,6 +103,12 @@ pub mod arkode_lsrkstep_io;
 pub mod arkode_erkstep_impl;
 pub mod arkode_erkstep;
 pub mod arkode_erkstep_io;
+pub mod arkode_sunstepper;
+pub mod arkode_splittingstep_coefficients;
+pub mod arkode_splittingstep_impl;
+pub mod arkode_splittingstep;
+pub mod arkode_forcingstep_impl;
+pub mod arkode_forcingstep;
 
 // Flat prelude so examples can `use arkode_rs::*;` like a C `#include`.
 pub use crate::arkode_impl::*;
