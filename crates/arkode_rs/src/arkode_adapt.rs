@@ -130,13 +130,23 @@ fn arkAdapt_inner(
     } else {
         std::cmp::min(hadapt_mem.p, hadapt_mem.q) + hadapt_mem.adjust
     };
-    let mut retval = SUNAdaptController_EstimateStep(
-        hadapt_mem.hcontroller.as_mut().unwrap(),
-        hcur,
-        controller_order,
-        dsm,
-        &mut h_acc,
-    );
+    /* (an MRI-H-TOL controller carries C's SUNAdaptController_MRIStep
+       wrapper semantics: dispatch through the MRIStep step memory) */
+    let hc = hadapt_mem.hcontroller.as_mut().unwrap();
+    let mut retval = if crate::sundials_adaptcontroller::SUNAdaptController_GetType(hc)
+        == crate::sundials_adaptcontroller::SUNAdaptController_Type::SUN_ADAPTCONTROLLER_MRI_H_TOL
+    {
+        crate::arkode_mristep_controller::SUNAdaptController_EstimateStep_MRIStep(
+            ark_mem,
+            hc,
+            hcur,
+            controller_order,
+            dsm,
+            &mut h_acc,
+        )
+    } else {
+        SUNAdaptController_EstimateStep(hc, hcur, controller_order, dsm, &mut h_acc)
+    };
     if retval != SUN_SUCCESS {
         arkProcessError(
             Some(ark_mem),

@@ -1000,17 +1000,23 @@ pub fn arkCompleteStep(ark_mem: &mut ARKodeMem, dsm: f64) -> i32 {
     }
     ark_mem.fn_is_current = false;
 
-    /* Notify time step controller object of successful step */
+    /* Notify time step controller object of successful step (an
+       MRI-H-TOL controller carries C's SUNAdaptController_MRIStep
+       wrapper semantics: dispatch through the MRIStep step memory) */
     let (h, _eta) = (ark_mem.h, ark_mem.eta);
     if ark_mem.hadapt_mem.as_ref().unwrap().hcontroller.is_some() {
-        let hc = ark_mem
-            .hadapt_mem
-            .as_mut()
-            .unwrap()
-            .hcontroller
-            .as_mut()
-            .unwrap();
-        let retval = crate::sundials_adaptcontroller::SUNAdaptController_UpdateH(hc, h, dsm);
+        let mut hadapt_mem = ark_mem.hadapt_mem.take().unwrap();
+        let hc = hadapt_mem.hcontroller.as_mut().unwrap();
+        let retval = if crate::sundials_adaptcontroller::SUNAdaptController_GetType(hc)
+            == crate::sundials_adaptcontroller::SUNAdaptController_Type::SUN_ADAPTCONTROLLER_MRI_H_TOL
+        {
+            crate::arkode_mristep_controller::SUNAdaptController_UpdateH_MRIStep(
+                ark_mem, hc, h, dsm,
+            )
+        } else {
+            crate::sundials_adaptcontroller::SUNAdaptController_UpdateH(hc, h, dsm)
+        };
+        ark_mem.hadapt_mem = Some(hadapt_mem);
         if retval != crate::sundials_errors::SUN_SUCCESS {
             arkProcessError(
                 Some(ark_mem),

@@ -323,16 +323,12 @@ pub fn mriStep_SetAdaptController(ark_mem: &mut ARKodeMem, C: Option<SUNAdaptCon
         return crate::arkode_io::arkReplaceAdaptController(ark_mem, C, false);
     }
 
-    /* (deferred) SUNAdaptController_MRIStep wrapper */
-    arkProcessError(
-        Some(ark_mem),
-        ARK_ILL_INPUT,
-        line!(),
-        "mriStep_SetAdaptController",
-        file!(),
-        "MRI-H-TOL controller wrapper is not yet supported in this port",
-    );
-    ARK_ILL_INPUT
+    /* Create the mriStepControl wrapper, pass that to ARKODE, and give
+       ownership of the wrapper to ARKODE.  (The Rust wrapper collapses
+       onto storing the MRI-H-TOL controller itself; arkAdapt and
+       arkCompleteStep dispatch its estimatestep/updateh ops through the
+       MRIStep step memory at the call sites — arkode_mristep_controller.rs.) */
+    crate::arkode_io::arkReplaceAdaptController(ark_mem, C, true)
 }
 
 /*---------------------------------------------------------------
