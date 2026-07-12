@@ -39,3 +39,19 @@ path = "examples/ark_KrylovDemo_prec.rs"
 [[example]]
 name = "ark_kepler"
 path = "examples/ark_kepler.rs"
+
+[[example]]
+name = "ark_analytic_lsrk"
+path = "examples/ark_analytic_lsrk.rs"
+
+[[example]]
+name = "ark_analytic_lsrk_varjac"
+path = "examples/ark_analytic_lsrk_varjac.rs"
+
+[[example]]
+name = "ark_analytic_lsrk_domeigest"
+path = "examples/ark_analytic_lsrk_domeigest.rs"
+
+[[example]]
+name = "ark_analytic_ssprk"
+path = "examples/ark_analytic_ssprk.rs"

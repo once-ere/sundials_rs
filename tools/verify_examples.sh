@@ -99,7 +99,9 @@ verify_crate() {
         [ -f "$vref" ] || continue
         local base; base="$(basename "$vref" .out)"
         local suffix="${base#${name}_}"
-        case " $names " in *" ${name}_${suffix%%_*} "*) continue ;; esac
+        case " $(printf '%s' "$names" | tr '\n' ' ') " in
+          *" ${name}_${suffix%%_*} "*) continue ;;
+        esac
         local args
         args="$(awk -v k="$base" '$1 == k { $1=""; print substr($0,2); exit }' \
                 tools/verify_args.map 2>/dev/null)"

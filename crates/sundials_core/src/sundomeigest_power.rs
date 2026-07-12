@@ -10,7 +10,10 @@
  * be undefined behavior through a mismatched content cast).
  *
  * Adaptations (see also sundials_domeigestimator.rs):
- *  - ATimes is a stored boxed closure (workspace ATimesFn); the C
+ *  - ATimes is supplied at Estimate time as a closure argument
+ *    (the C SetATimes-stored callback cannot live inside the
+ *    integrator that owns the estimator; same pinned adaptation as
+ *    LinearSolver.solve); the C
  *    void* ATdata is captured by the closure and drops out.
  *  - The constructor returns the enum directly; the C SUNAssertNull
  *    argument checks (q/ops non-NULL, required ops present, q != 0)
@@ -43,9 +46,7 @@ const DEE_TOL_DEFAULT: f64 = 0.005;
 const DEE_MAX_ITER_DEFAULT: i64 = 100;
 
 /// C struct SUNDomEigEstimatorContent_Power_
-pub struct SUNDomEigEstimatorContent_Power<'a> {
-    /// User provided ATimes function (captures the C ATdata)
-    pub ATimes: Option<Box<ATimesFn<'a>>>,
+pub struct SUNDomEigEstimatorContent_Power {
     /// workspace vectors
     pub V: NVector,
     pub q: NVector,
@@ -63,18 +64,18 @@ pub struct SUNDomEigEstimatorContent_Power<'a> {
     pub res: f64,
 }
 
-fn content<'s, 'a>(
-    dee: &'s SUNDomEigEstimator<'a>,
-) -> Result<&'s SUNDomEigEstimatorContent_Power<'a>, SUNErrCode> {
+fn content(
+    dee: &SUNDomEigEstimator,
+) -> Result<&SUNDomEigEstimatorContent_Power, SUNErrCode> {
     match dee {
         SUNDomEigEstimator::Power(c) => Ok(c),
         _ => Err(SUN_ERR_ARG_INCOMPATIBLE),
     }
 }
 
-fn content_mut<'s, 'a>(
-    dee: &'s mut SUNDomEigEstimator<'a>,
-) -> Result<&'s mut SUNDomEigEstimatorContent_Power<'a>, SUNErrCode> {
+fn content_mut(
+    dee: &mut SUNDomEigEstimator,
+) -> Result<&mut SUNDomEigEstimatorContent_Power, SUNErrCode> {
     match dee {
         SUNDomEigEstimator::Power(c) => Ok(c),
         _ => Err(SUN_ERR_ARG_INCOMPATIBLE),
@@ -86,12 +87,12 @@ fn content_mut<'s, 'a>(
  * ----------------------------------------------------------------- */
 
 /// Function to create a new PI estimator
-pub fn SUNDomEigEstimator_Power<'a>(
+pub fn SUNDomEigEstimator_Power(
     q: &NVector,
     max_iters: i64,
     rel_tol: f64,
     _sunctx: &SUNContext,
-) -> SUNDomEigEstimator<'a> {
+) -> SUNDomEigEstimator {
     /* check for max_iters values; if illegal use defaults */
     let max_iters = if max_iters <= 0 {
         DEE_MAX_ITER_DEFAULT
@@ -112,7 +113,6 @@ pub fn SUNDomEigEstimator_Power<'a>(
     let cv = N_VClone(q);
 
     SUNDomEigEstimator::Power(SUNDomEigEstimatorContent_Power {
-        ATimes: None,
         V: cv,
         q: cq,
         max_iters,
@@ -128,21 +128,7 @@ pub fn SUNDomEigEstimator_Power<'a>(
  * implementation of dominant eigenvalue estimator operations
  * ----------------------------------------------------------------- */
 
-pub fn SUNDomEigEstimator_SetATimes_Power<'a>(
-    dee: &mut SUNDomEigEstimator<'a>,
-    ATimes: Box<ATimesFn<'a>>,
-) -> SUNErrCode {
-    let c = match content_mut(dee) {
-        Ok(c) => c,
-        Err(e) => return e,
-    };
-    /* set function pointers to integrator-supplied ATimes routine
-    and data, and return with success */
-    c.ATimes = Some(ATimes);
-    SUN_SUCCESS
-}
-
-pub fn SUNDomEigEstimator_Initialize_Power(dee: &mut SUNDomEigEstimator<'_>) -> SUNErrCode {
+pub fn SUNDomEigEstimator_Initialize_Power(dee: &mut SUNDomEigEstimator) -> SUNErrCode {
     let c = match content_mut(dee) {
         Ok(c) => c,
         Err(e) => return e,
@@ -158,9 +144,7 @@ pub fn SUNDomEigEstimator_Initialize_Power(dee: &mut SUNDomEigEstimator<'_>) -> 
         c.max_iters = DEE_MAX_ITER_DEFAULT;
     }
 
-    if c.ATimes.is_none() {
-        return SUN_ERR_ARG_CORRUPT;
-    }
+    /* (ATimes presence check dropped: it arrives at Estimate time) */
 
     /* Initialize the vector V */
     let mut normq = N_VDotProd(&c.q, &c.q);
@@ -172,7 +156,7 @@ pub fn SUNDomEigEstimator_Initialize_Power(dee: &mut SUNDomEigEstimator<'_>) -> 
 }
 
 pub fn SUNDomEigEstimator_SetNumPreprocessIters_Power(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     num_iters: i32,
 ) -> SUNErrCode {
     let c = match content_mut(dee) {
@@ -191,7 +175,7 @@ pub fn SUNDomEigEstimator_SetNumPreprocessIters_Power(
 }
 
 pub fn SUNDomEigEstimator_SetRelTol_Power(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     rel_tol: f64,
 ) -> SUNErrCode {
     let c = match content_mut(dee) {
@@ -210,7 +194,7 @@ pub fn SUNDomEigEstimator_SetRelTol_Power(
 }
 
 pub fn SUNDomEigEstimator_SetMaxIters_Power(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     max_iters: i64,
 ) -> SUNErrCode {
     let c = match content_mut(dee) {
@@ -229,7 +213,7 @@ pub fn SUNDomEigEstimator_SetMaxIters_Power(
 }
 
 pub fn SUNDomEigEstimator_SetInitialGuess_Power(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     q: &NVector,
 ) -> SUNErrCode {
     let c = match content_mut(dee) {
@@ -247,7 +231,8 @@ pub fn SUNDomEigEstimator_SetInitialGuess_Power(
 }
 
 pub fn SUNDomEigEstimator_Estimate_Power(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
+    atimes: &mut ATimesFn,
     lambdaR: &mut f64,
     lambdaI: &mut f64,
 ) -> SUNErrCode {
@@ -262,11 +247,6 @@ pub fn SUNDomEigEstimator_Estimate_Power(
     let mut normq: f64;
     c.num_ATimes = 0;
     c.num_iters = 0;
-
-    let atimes = match c.ATimes.as_mut() {
-        Some(f) => f,
-        None => return SUN_ERR_ARG_CORRUPT,
-    };
 
     for _i in 0..c.num_warmups {
         let retval = atimes(&c.V, &mut c.q);
@@ -311,7 +291,7 @@ pub fn SUNDomEigEstimator_Estimate_Power(
 }
 
 pub fn SUNDomEigEstimator_GetRes_Power(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     res: &mut f64,
 ) -> SUNErrCode {
     let c = match content(dee) {
@@ -323,7 +303,7 @@ pub fn SUNDomEigEstimator_GetRes_Power(
 }
 
 pub fn SUNDomEigEstimator_GetNumIters_Power(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     num_iters: &mut i64,
 ) -> SUNErrCode {
     let c = match content(dee) {
@@ -335,7 +315,7 @@ pub fn SUNDomEigEstimator_GetNumIters_Power(
 }
 
 pub fn SUNDomEigEstimator_GetNumATimesCalls_Power(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     num_ATimes: &mut i64,
 ) -> SUNErrCode {
     let c = match content(dee) {
@@ -347,7 +327,7 @@ pub fn SUNDomEigEstimator_GetNumATimesCalls_Power(
 }
 
 pub fn SUNDomEigEstimator_Write_Power(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     outfile: &mut dyn std::io::Write,
 ) -> SUNErrCode {
     let c = match content(dee) {
@@ -415,8 +395,7 @@ mod tests {
                 assert_eq!(c.res, 0.0);
                 assert_eq!(c.q.data, vec![1.0, 1.0, 1.0]);
                 assert_eq!(c.V.len(), 3);
-                assert!(c.ATimes.is_none());
-            }
+                    }
             _ => panic!(),
         }
         assert_eq!(SUNDomEigEstimator_Destroy(dee), SUN_SUCCESS);
@@ -433,15 +412,12 @@ mod tests {
             vec![0.0, 2.0, 0.0],
             vec![0.0, 0.0, 10.0],
         ];
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         assert_eq!(SUNDomEigEstimator_SetNumPreprocessIters(&mut dee, 5), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
 
         let (mut lr, mut li) = (0.0, -1.0);
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
         assert!((lr - 10.0).abs() < 1e-6, "lambdaR = {}", lr);
         assert_eq!(li, 0.0);
 
@@ -465,10 +441,7 @@ mod tests {
         let q = NVector::from_slice(&[1.0, 1.0]);
         let mut dee = SUNDomEigEstimator_Power(&q, 500, 1e-12, &sunctx);
         let a = vec![vec![3.0, 1.0], vec![1.0, 3.0]]; /* eigenvalues 4, 2 */
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         assert_eq!(SUNDomEigEstimator_SetNumPreprocessIters(&mut dee, 0), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
         /* a non-normalized guess must be normalized into V */
@@ -482,7 +455,7 @@ mod tests {
             _ => panic!(),
         }
         let (mut lr, mut li) = (0.0, 0.0);
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
         assert!((lr - 4.0).abs() < 1e-8, "lambdaR = {}", lr);
         assert_eq!(li, 0.0);
     }
@@ -492,22 +465,14 @@ mod tests {
         let sunctx = SUNContext::default();
         let q = NVector::from_slice(&[1.0, 1.0]);
         let mut dee = SUNDomEigEstimator_Power(&q, 10, 0.1, &sunctx);
-        let fail: Box<ATimesFn<'static>> = Box::new(|_v: &NVector, _av: &mut NVector| -> i32 { 1 });
-        assert_eq!(SUNDomEigEstimator_SetATimes(&mut dee, fail), SUN_SUCCESS);
+        let mut atimes: Box<ATimesFn<'static>> =
+            Box::new(|_v: &NVector, _av: &mut NVector| -> i32 { 1 });
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
         let (mut lr, mut li) = (0.0, 0.0);
         assert_eq!(
-            SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li),
+            SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li),
             SUN_ERR_USER_FCN_FAIL
         );
-    }
-
-    #[test]
-    fn initialize_without_atimes_fails() {
-        let sunctx = SUNContext::default();
-        let q = NVector::from_slice(&[1.0, 1.0]);
-        let mut dee = SUNDomEigEstimator_Power(&q, 10, 0.1, &sunctx);
-        assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_ERR_ARG_CORRUPT);
     }
 
     #[test]
@@ -588,14 +553,11 @@ mod tests {
             vec![0.0, 2.0, 0.0],
             vec![0.0, 0.0, 10.0],
         ];
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         assert_eq!(SUNDomEigEstimator_SetNumPreprocessIters(&mut dee, 5), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
         let (mut lr, mut li) = (0.0, 0.0);
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
 
         let (mut ni, mut na) = (0i64, 0i64);
         assert_eq!(SUNDomEigEstimator_GetNumIters(&dee, &mut ni), SUN_SUCCESS);

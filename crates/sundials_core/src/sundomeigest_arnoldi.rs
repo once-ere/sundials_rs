@@ -40,7 +40,9 @@
  * the packed matrix is deterministically upper Hessenberg, and the
  * QR iteration never reads below the first subdiagonal anyway.
  *
- * Other adaptations as in sundomeigest_power.rs: ATimes is a stored
+ * Other adaptations as in sundomeigest_power.rs: ATimes is supplied
+ * at Estimate time as a closure argument (pinned adaptation; the C
+ * stores it via SetATimes); it is no longer a stored
  * boxed closure (C ATdata captured); constructor SUNAssertNull
  * argument checks are debug-only in C and drop out; the SUNAssert
  * guards for a missing ATimes / not-yet-Initialized workspace are
@@ -69,9 +71,7 @@ const DEE_NUM_OF_WARMUPS_ARNOLDI_DEFAULT: i32 = 100;
 const DEE_KRYLOV_DIM_DEFAULT: i32 = 3;
 
 /// C struct SUNDomEigEstimatorContent_Arnoldi_
-pub struct SUNDomEigEstimatorContent_Arnoldi<'a> {
-    /// User provided ATimes function (captures the C ATdata)
-    pub ATimes: Option<Box<ATimesFn<'a>>>,
+pub struct SUNDomEigEstimatorContent_Arnoldi {
     /// Krylov subspace vectors
     pub V: Vec<NVector>,
     pub q: NVector,
@@ -95,18 +95,18 @@ pub struct SUNDomEigEstimatorContent_Arnoldi<'a> {
     pub Hes: Vec<Vec<f64>>,
 }
 
-fn content<'s, 'a>(
-    dee: &'s SUNDomEigEstimator<'a>,
-) -> Result<&'s SUNDomEigEstimatorContent_Arnoldi<'a>, SUNErrCode> {
+fn content(
+    dee: &SUNDomEigEstimator,
+) -> Result<&SUNDomEigEstimatorContent_Arnoldi, SUNErrCode> {
     match dee {
         SUNDomEigEstimator::Arnoldi(c) => Ok(c),
         _ => Err(SUN_ERR_ARG_INCOMPATIBLE),
     }
 }
 
-fn content_mut<'s, 'a>(
-    dee: &'s mut SUNDomEigEstimator<'a>,
-) -> Result<&'s mut SUNDomEigEstimatorContent_Arnoldi<'a>, SUNErrCode> {
+fn content_mut(
+    dee: &mut SUNDomEigEstimator,
+) -> Result<&mut SUNDomEigEstimatorContent_Arnoldi, SUNErrCode> {
     match dee {
         SUNDomEigEstimator::Arnoldi(c) => Ok(c),
         _ => Err(SUN_ERR_ARG_INCOMPATIBLE),
@@ -118,11 +118,11 @@ fn content_mut<'s, 'a>(
  * ----------------------------------------------------------------- */
 
 /// Function to create a new Arnoldi estimator
-pub fn SUNDomEigEstimator_Arnoldi<'a>(
+pub fn SUNDomEigEstimator_Arnoldi(
     q: &NVector,
     kry_dim: i32,
     _sunctx: &SUNContext,
-) -> SUNDomEigEstimator<'a> {
+) -> SUNDomEigEstimator {
     /* Check if kry_dim >= 2 */
     let kry_dim = if kry_dim < 3 {
         DEE_KRYLOV_DIM_DEFAULT
@@ -137,7 +137,6 @@ pub fn SUNDomEigEstimator_Arnoldi<'a>(
     let cv: Vec<NVector> = (0..(kry_dim + 1)).map(|_| N_VClone(q)).collect();
 
     SUNDomEigEstimator::Arnoldi(SUNDomEigEstimatorContent_Arnoldi {
-        ATimes: None,
         V: cv,
         q: cq,
         kry_dim,
@@ -156,21 +155,7 @@ pub fn SUNDomEigEstimator_Arnoldi<'a>(
  * implementation of dominant eigenvalue estimator operations
  * ----------------------------------------------------------------- */
 
-pub fn SUNDomEigEstimator_SetATimes_Arnoldi<'a>(
-    dee: &mut SUNDomEigEstimator<'a>,
-    ATimes: Box<ATimesFn<'a>>,
-) -> SUNErrCode {
-    let c = match content_mut(dee) {
-        Ok(c) => c,
-        Err(e) => return e,
-    };
-    /* set function pointers to integrator-supplied ATimes routine
-    and data, and return with success */
-    c.ATimes = Some(ATimes);
-    SUN_SUCCESS
-}
-
-pub fn SUNDomEigEstimator_Initialize_Arnoldi(dee: &mut SUNDomEigEstimator<'_>) -> SUNErrCode {
+pub fn SUNDomEigEstimator_Initialize_Arnoldi(dee: &mut SUNDomEigEstimator) -> SUNErrCode {
     let c = match content_mut(dee) {
         Ok(c) => c,
         Err(e) => return e,
@@ -183,9 +168,7 @@ pub fn SUNDomEigEstimator_Initialize_Arnoldi(dee: &mut SUNDomEigEstimator<'_>) -
         c.num_warmups = DEE_NUM_OF_WARMUPS_ARNOLDI_DEFAULT;
     }
 
-    if c.ATimes.is_none() {
-        return SUN_ERR_ARG_CORRUPT;
-    }
+    /* (ATimes presence check dropped: it arrives at Estimate time) */
 
     let kd = c.kry_dim as usize;
     if c.LAPACK_A.is_empty() {
@@ -216,7 +199,7 @@ pub fn SUNDomEigEstimator_Initialize_Arnoldi(dee: &mut SUNDomEigEstimator<'_>) -
 }
 
 pub fn SUNDomEigEstimator_SetNumPreprocessIters_Arnoldi(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     num_iters: i32,
 ) -> SUNErrCode {
     let c = match content_mut(dee) {
@@ -235,7 +218,7 @@ pub fn SUNDomEigEstimator_SetNumPreprocessIters_Arnoldi(
 }
 
 pub fn SUNDomEigEstimator_SetInitialGuess_Arnoldi(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     q: &NVector,
 ) -> SUNErrCode {
     let c = match content_mut(dee) {
@@ -253,7 +236,8 @@ pub fn SUNDomEigEstimator_SetInitialGuess_Arnoldi(
 }
 
 pub fn SUNDomEigEstimator_Estimate_Arnoldi(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
+    atimes: &mut ATimesFn,
     lambdaR: &mut f64,
     lambdaI: &mut f64,
 ) -> SUNErrCode {
@@ -271,11 +255,6 @@ pub fn SUNDomEigEstimator_Estimate_Arnoldi(
     let mut normq: f64;
     c.num_ATimes = 0;
     c.num_iters = 0;
-
-    let atimes = match c.ATimes.as_mut() {
-        Some(f) => f,
-        None => return SUN_ERR_ARG_CORRUPT,
-    };
 
     /* Set the initial q = A^{num_warmups}q/||A^{num_warmups}q|| */
     for _i in 0..c.num_warmups {
@@ -362,7 +341,7 @@ pub fn SUNDomEigEstimator_Estimate_Arnoldi(
 }
 
 pub fn SUNDomEigEstimator_GetNumIters_Arnoldi(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     num_iters: &mut i64,
 ) -> SUNErrCode {
     let c = match content(dee) {
@@ -374,7 +353,7 @@ pub fn SUNDomEigEstimator_GetNumIters_Arnoldi(
 }
 
 pub fn SUNDomEigEstimator_GetNumATimesCalls_Arnoldi(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     num_ATimes: &mut i64,
 ) -> SUNErrCode {
     let c = match content(dee) {
@@ -386,7 +365,7 @@ pub fn SUNDomEigEstimator_GetNumATimesCalls_Arnoldi(
 }
 
 pub fn SUNDomEigEstimator_Write_Arnoldi(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     outfile: &mut dyn std::io::Write,
 ) -> SUNErrCode {
     let c = match content(dee) {
@@ -708,8 +687,7 @@ mod tests {
                 assert_eq!(c.num_warmups, 100);
                 assert_eq!(c.V.len(), 4); /* kry_dim + 1 clones */
                 assert_eq!(c.q.data, vec![1.0, 2.0, 3.0]);
-                assert!(c.ATimes.is_none());
-                assert!(c.Hes.is_empty()); /* allocated by Initialize */
+                        assert!(c.Hes.is_empty()); /* allocated by Initialize */
             }
             _ => panic!(),
         }
@@ -726,16 +704,13 @@ mod tests {
             vec![0.0, 2.0, 0.0],
             vec![0.0, 0.0, 10.0],
         ];
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         /* keep the Krylov basis exact: no preprocessing iterations */
         assert_eq!(SUNDomEigEstimator_SetNumPreprocessIters(&mut dee, 0), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
 
         let (mut lr, mut li) = (0.0, -1.0);
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
         /* kry_dim = n = 3, so the Hessenberg matrix is similar to A:
         the dominant eigenvalue is reproduced (up to roundoff) */
         assert!((lr - 10.0).abs() < 1e-8, "lambdaR = {}", lr);
@@ -761,15 +736,12 @@ mod tests {
             vec![2.0, 0.0, 0.0],
             vec![0.0, 0.0, 1.0],
         ];
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         assert_eq!(SUNDomEigEstimator_SetNumPreprocessIters(&mut dee, 0), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
 
         let (mut lr, mut li) = (0.0, 0.0);
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
         assert!(lr.abs() < 1e-8, "lambdaR = {}", lr);
         assert!((li - 2.0).abs() < 1e-8, "lambdaI = {}", li);
 
@@ -790,15 +762,12 @@ mod tests {
             vec![0.0, 0.0, 2.0, 0.0],
             vec![0.0, 0.0, 0.0, 1.0],
         ];
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         assert_eq!(SUNDomEigEstimator_SetNumPreprocessIters(&mut dee, 2), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
 
         let (mut lr, mut li) = (0.0, 0.0);
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
         /* dominant eigenvalue of [[4,1],[1,3]] block: (7+sqrt(5))/2.
         kry_dim (3) < n (4), so the Ritz value is an approximation */
         let want = (7.0 + 5.0f64.sqrt()) / 2.0;
@@ -812,7 +781,7 @@ mod tests {
         assert_eq!(na, 5);
 
         /* a second Estimate call resets the counters */
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_GetNumIters(&dee, &mut ni), SUN_SUCCESS);
         assert_eq!(ni, 5);
     }
@@ -827,13 +796,10 @@ mod tests {
             vec![0.0, 2.0, 0.0],
             vec![0.0, 0.0, 3.0],
         ];
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         let (mut lr, mut li) = (0.0, 0.0);
         assert_eq!(
-            SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li),
+            SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li),
             SUN_ERR_ARG_CORRUPT
         );
     }
@@ -848,14 +814,11 @@ mod tests {
             vec![0.0, 2.0, 0.0],
             vec![0.0, 0.0, 10.0],
         ];
-        assert_eq!(
-            SUNDomEigEstimator_SetATimes(&mut dee, dense_atimes(a)),
-            SUN_SUCCESS
-        );
+        let mut atimes = dense_atimes(a);
         assert_eq!(SUNDomEigEstimator_SetNumPreprocessIters(&mut dee, 2), SUN_SUCCESS);
         assert_eq!(SUNDomEigEstimator_Initialize(&mut dee), SUN_SUCCESS);
         let (mut lr, mut li) = (0.0, 0.0);
-        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut lr, &mut li), SUN_SUCCESS);
+        assert_eq!(SUNDomEigEstimator_Estimate(&mut dee, &mut atimes, &mut lr, &mut li), SUN_SUCCESS);
 
         let mut buf: Vec<u8> = Vec::new();
         assert_eq!(SUNDomEigEstimator_Write(&dee, &mut buf), SUN_SUCCESS);

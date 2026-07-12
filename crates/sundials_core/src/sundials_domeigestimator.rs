@@ -34,9 +34,9 @@ use crate::sundomeigest_arnoldi::SUNDomEigEstimatorContent_Arnoldi;
 use crate::sundomeigest_power::SUNDomEigEstimatorContent_Power;
 
 /// The generic estimator: C's ops-table polymorphism as enum dispatch.
-pub enum SUNDomEigEstimator<'a> {
-    Power(SUNDomEigEstimatorContent_Power<'a>),
-    Arnoldi(SUNDomEigEstimatorContent_Arnoldi<'a>),
+pub enum SUNDomEigEstimator {
+    Power(SUNDomEigEstimatorContent_Power),
+    Arnoldi(SUNDomEigEstimatorContent_Arnoldi),
 }
 
 /* -----------------------------------------------------------------
@@ -72,7 +72,7 @@ fn atoi(s: &str) -> i32 {
 /// C sunDEESetFromCommandLine: process base-class options. `args`
 /// corresponds to argv (args[0] is the program name and is skipped).
 fn sunDEESetFromCommandLine(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     did: Option<&str>,
     args: &[String],
 ) -> SUNErrCode {
@@ -139,23 +139,9 @@ fn sunDEESetFromCommandLine(
  * Functions in the 'ops' structure
  * ----------------------------------------------------------------- */
 
-pub fn SUNDomEigEstimator_SetATimes<'a>(
-    dee: &mut SUNDomEigEstimator<'a>,
-    a_times: Box<ATimesFn<'a>>,
-) -> SUNErrCode {
-    match dee {
-        SUNDomEigEstimator::Power(_) => {
-            crate::sundomeigest_power::SUNDomEigEstimator_SetATimes_Power(dee, a_times)
-        }
-        SUNDomEigEstimator::Arnoldi(_) => {
-            crate::sundomeigest_arnoldi::SUNDomEigEstimator_SetATimes_Arnoldi(dee, a_times)
-        }
-    }
-}
-
 /// C SUNDomEigEstimator_SetOptions(DEE, Did, file_name, argc, argv).
 pub fn SUNDomEigEstimator_SetOptions(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     did: Option<&str>,
     file_name: Option<&str>,
     args: &[String],
@@ -181,7 +167,7 @@ pub fn SUNDomEigEstimator_SetOptions(
 }
 
 pub fn SUNDomEigEstimator_SetMaxIters(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     max_iters: i64,
 ) -> SUNErrCode {
     match dee {
@@ -193,7 +179,7 @@ pub fn SUNDomEigEstimator_SetMaxIters(
 }
 
 pub fn SUNDomEigEstimator_SetNumPreprocessIters(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     num_iters: i32,
 ) -> SUNErrCode {
     match dee {
@@ -210,7 +196,7 @@ pub fn SUNDomEigEstimator_SetNumPreprocessIters(
     }
 }
 
-pub fn SUNDomEigEstimator_SetRelTol(dee: &mut SUNDomEigEstimator<'_>, rel_tol: f64) -> SUNErrCode {
+pub fn SUNDomEigEstimator_SetRelTol(dee: &mut SUNDomEigEstimator, rel_tol: f64) -> SUNErrCode {
     match dee {
         SUNDomEigEstimator::Power(_) => {
             crate::sundomeigest_power::SUNDomEigEstimator_SetRelTol_Power(dee, rel_tol)
@@ -220,7 +206,7 @@ pub fn SUNDomEigEstimator_SetRelTol(dee: &mut SUNDomEigEstimator<'_>, rel_tol: f
 }
 
 pub fn SUNDomEigEstimator_SetInitialGuess(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
     q: &NVector,
 ) -> SUNErrCode {
     match dee {
@@ -233,7 +219,7 @@ pub fn SUNDomEigEstimator_SetInitialGuess(
     }
 }
 
-pub fn SUNDomEigEstimator_Initialize(dee: &mut SUNDomEigEstimator<'_>) -> SUNErrCode {
+pub fn SUNDomEigEstimator_Initialize(dee: &mut SUNDomEigEstimator) -> SUNErrCode {
     match dee {
         SUNDomEigEstimator::Power(_) => {
             crate::sundomeigest_power::SUNDomEigEstimator_Initialize_Power(dee)
@@ -245,24 +231,29 @@ pub fn SUNDomEigEstimator_Initialize(dee: &mut SUNDomEigEstimator<'_>) -> SUNErr
 }
 
 pub fn SUNDomEigEstimator_Estimate(
-    dee: &mut SUNDomEigEstimator<'_>,
+    dee: &mut SUNDomEigEstimator,
+    atimes: &mut ATimesFn,
     lambda_r: &mut f64,
     lambda_i: &mut f64,
 ) -> SUNErrCode {
-    /* C: SUN_ERR_NOT_IMPLEMENTED when the op is absent; both provide it */
+    /* C: SUN_ERR_NOT_IMPLEMENTED when the op is absent; both provide it.
+       ATimes arrives as a call-time argument (pinned adaptation; C
+       installs it once via SUNDomEigEstimator_SetATimes). */
     match dee {
         SUNDomEigEstimator::Power(_) => {
-            crate::sundomeigest_power::SUNDomEigEstimator_Estimate_Power(dee, lambda_r, lambda_i)
+            crate::sundomeigest_power::SUNDomEigEstimator_Estimate_Power(
+                dee, atimes, lambda_r, lambda_i,
+            )
         }
         SUNDomEigEstimator::Arnoldi(_) => {
             crate::sundomeigest_arnoldi::SUNDomEigEstimator_Estimate_Arnoldi(
-                dee, lambda_r, lambda_i,
+                dee, atimes, lambda_r, lambda_i,
             )
         }
     }
 }
 
-pub fn SUNDomEigEstimator_GetRes(dee: &SUNDomEigEstimator<'_>, res: &mut f64) -> SUNErrCode {
+pub fn SUNDomEigEstimator_GetRes(dee: &SUNDomEigEstimator, res: &mut f64) -> SUNErrCode {
     match dee {
         SUNDomEigEstimator::Power(_) => {
             crate::sundomeigest_power::SUNDomEigEstimator_GetRes_Power(dee, res)
@@ -276,7 +267,7 @@ pub fn SUNDomEigEstimator_GetRes(dee: &SUNDomEigEstimator<'_>, res: &mut f64) ->
 }
 
 pub fn SUNDomEigEstimator_GetNumIters(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     num_iters: &mut i64,
 ) -> SUNErrCode {
     match dee {
@@ -290,7 +281,7 @@ pub fn SUNDomEigEstimator_GetNumIters(
 }
 
 pub fn SUNDomEigEstimator_GetNumATimesCalls(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     num_atimes: &mut i64,
 ) -> SUNErrCode {
     match dee {
@@ -306,7 +297,7 @@ pub fn SUNDomEigEstimator_GetNumATimesCalls(
 }
 
 pub fn SUNDomEigEstimator_Write(
-    dee: &SUNDomEigEstimator<'_>,
+    dee: &SUNDomEigEstimator,
     outfile: &mut dyn std::io::Write,
 ) -> SUNErrCode {
     match dee {
@@ -323,7 +314,7 @@ pub fn SUNDomEigEstimator_Write(
 /// (SUNDomEigEstimator_Destroy_Power / _Arnoldi) free the workspace
 /// vectors and the content/ops structures; in Rust all of that is
 /// ownership drop.
-pub fn SUNDomEigEstimator_Destroy(dee: SUNDomEigEstimator<'_>) -> SUNErrCode {
+pub fn SUNDomEigEstimator_Destroy(dee: SUNDomEigEstimator) -> SUNErrCode {
     drop(dee);
     SUN_SUCCESS
 }
