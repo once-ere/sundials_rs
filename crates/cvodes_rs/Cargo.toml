@@ -103,3 +103,7 @@ path = "examples/cvsLotkaVolterra_ASA.rs"
 [[example]]
 name = "cvsHessian_ASA_FSA"
 path = "examples/cvsHessian_ASA_FSA.rs"
+
+[[example]]
+name = "cvsFoodWeb_ASAi_kry"
+path = "examples/cvsFoodWeb_ASAi_kry.rs"
