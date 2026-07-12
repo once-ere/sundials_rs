@@ -67,3 +67,7 @@ path = "examples/cvsPendulum_dns.rs"
 [[example]]
 name = "cvsRoberts_FSA_dns"
 path = "examples/cvsRoberts_FSA_dns.rs"
+
+[[example]]
+name = "cvsAdvDiff_FSA_non"
+path = "examples/cvsAdvDiff_FSA_non.rs"
