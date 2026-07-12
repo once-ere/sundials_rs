@@ -995,3 +995,34 @@ pub fn ARKodeGetRootInfo(ark_mem: &mut ARKodeMem, rootsfound: &mut [i32]) -> i32
     }
     ARK_SUCCESS
 }
+
+/*---------------------------------------------------------------
+  ARKodeGetWorkSpace:
+
+  Returns integrator work space requirements
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetWorkSpace(ark_mem: &mut ARKodeMem, lenrw: &mut i64, leniw: &mut i64) -> i32 {
+    *leniw = ark_mem.liw;
+    *lenrw = ark_mem.lrw;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetLastStep:
+
+  Returns the step size used on the last successful step
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetLastStep(ark_mem: &mut ARKodeMem, hlast: &mut f64) -> i32 {
+    *hlast = ark_mem.hold;
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetCurrentStep:
+
+  Returns the step size to be attempted on the next step
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetCurrentStep(ark_mem: &mut ARKodeMem, hcur: &mut f64) -> i32 {
+    *hcur = ark_mem.next_h;
+    ARK_SUCCESS
+}

@@ -17,9 +17,8 @@
  *    the deduce_rhs/trivial-predictor-autonomous residual forms) is
  *    re-derived at the use sites in arkode_arkstep_nls.rs instead of
  *    being stored as an alias.
- *  - Mass-matrix solver data (minit/msetup/mmult/msolve/mfree,
- *    mass_mem, msolve_type) is deferred with the ARKLS mass half;
- *    mass_type is kept since the stepper logic branches on it.
+ *  - Mass-matrix solver data: fn pointers live here; the
+ *    ARKLsMassMem box lives on ARKodeMem.mass_mem (Addendum C.2).
  *  - `adj_fe` (SUNAdjRhsFn) is deferred with the adjoint machinery
  *    (needs the ManyVector module).
  *  - `forcing` in C aliases the caller's vectors (MRIStep); here it
@@ -41,8 +40,8 @@ use crate::arkode_butcher_erk::{
     ARKODE_ERKTableID,
 };
 use crate::arkode_impl::{
-    ARKLinsolFreeFn, ARKLinsolInitFn, ARKLinsolSetupFn, ARKLinsolSolveFn, ARKRhsFn,
-    ARKStagePredictFn,
+    ARKLinsolFreeFn, ARKLinsolInitFn, ARKLinsolSetupFn, ARKLinsolSolveFn, ARKMassFreeFn,
+    ARKMassInitFn, ARKMassMultFn, ARKMassSetupFn, ARKMassSolveFn, ARKRhsFn, ARKStagePredictFn,
 };
 use crate::nvector_serial::NVector;
 use crate::sundials_linearsolver::SUNLinearSolver_Type;
@@ -197,9 +196,15 @@ pub struct ARKodeARKStepMem {
     pub lfree: Option<ARKLinsolFreeFn>,
     pub lsolve_type: SUNLinearSolver_Type,
 
-    /* Mass matrix solver data: deferred with the ARKLS mass half;
-       mass_type kept (stepper logic branches on it) */
+    /* Mass matrix solver data (the mass_mem box itself lives on
+       ARKodeMem.mass_mem — Addendum C.2) */
+    pub minit: Option<ARKMassInitFn>,
+    pub msetup: Option<ARKMassSetupFn>,
+    pub mmult: Option<ARKMassMultFn>,
+    pub msolve: Option<ARKMassSolveFn>,
+    pub mfree: Option<ARKMassFreeFn>,
     pub mass_type: i32, /* 0=identity, 1=fixed, 2=time-dep */
+    pub msolve_type: crate::sundials_linearsolver::SUNLinearSolver_Type,
 
     /* Counters */
     pub nfe: i64,       /* num fe calls               */
@@ -278,7 +283,13 @@ impl Default for ARKodeARKStepMem {
             lsolve: None,
             lfree: None,
             lsolve_type: crate::sundials_linearsolver::SUNLINEARSOLVER_DIRECT,
+            minit: None,
+            msetup: None,
+            mmult: None,
+            msolve: None,
+            mfree: None,
             mass_type: MASS_IDENTITY,
+            msolve_type: crate::sundials_linearsolver::SUNLINEARSOLVER_DIRECT,
             nfe: 0,
             nfi: 0,
             nsetups: 0,

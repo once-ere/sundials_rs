@@ -69,8 +69,11 @@ pub fn ARKStepCreate(
 
     /* Attach step_mem structure and function pointers to ark_mem */
     ark_mem.step_attachlinsol = Some(arkStep_AttachLinsol);
+    ark_mem.step_attachmasssol = Some(arkStep_AttachMasssol);
     ark_mem.step_disablelsetup = Some(arkStep_DisableLSetup);
+    ark_mem.step_disablemsetup = Some(arkStep_DisableMSetup);
     ark_mem.step_getlinmem = Some(arkStep_GetLmem);
+    ark_mem.step_getmassmem = Some(arkStep_GetMassMem);
     ark_mem.step_setjcur = Some(arkStep_SetJcur);
     ark_mem.step_getimplicitrhs = Some(arkStep_GetImplicitRHS);
     ark_mem.step_getgammas = Some(arkStep_GetGammas);
@@ -121,7 +124,7 @@ pub fn ARKStepCreate(
     ark_mem.step_getstageindex = Some(crate::arkode_arkstep_io::arkStep_GetStageIndex);
     ark_mem.step_supports_adaptive = true;
     ark_mem.step_supports_implicit = true;
-    ark_mem.step_supports_massmatrix = false; /* SUNTRUE in C; mass half pending */
+    ark_mem.step_supports_massmatrix = true;
     ark_mem.step_supports_relaxation = false; /* SUNTRUE in C; relaxation pending */
     ark_mem.step_mem = Some(step_mem);
 
@@ -353,7 +356,10 @@ pub fn arkStep_Free(ark_mem: &mut ARKodeMem) {
                 lfree(ark_mem);
             }
 
-            /* (mass matrix solver memory: mass half not ported) */
+            /* free the mass matrix solver memory */
+            if let Some(mfree) = step_mem.mfree {
+                mfree(ark_mem);
+            }
 
             /* free the sdata, zpred and zcor vectors */
             arkFreeVec(ark_mem, &mut step_mem.sdata);
@@ -499,6 +505,66 @@ pub fn arkStep_DisableLSetup(ark_mem: &mut ARKodeMem) {
 }
 
 /*---------------------------------------------------------------
+  arkStep_AttachMasssol:
+
+  This routine attaches the mass matrix linear solver interface
+  routines and solver type to the ARKStep module; the
+  ARKLsMassMem box goes to ark_mem.mass_mem (Addendum C.2).
+  ---------------------------------------------------------------*/
+#[allow(clippy::too_many_arguments)]
+pub fn arkStep_AttachMasssol(
+    ark_mem: &mut ARKodeMem,
+    minit: Option<ARKMassInitFn>,
+    msetup: Option<ARKMassSetupFn>,
+    mmult: Option<ARKMassMultFn>,
+    msolve: Option<ARKMassSolveFn>,
+    mfree: Option<ARKMassFreeFn>,
+    time_dep: bool,
+    msolve_type: crate::sundials_linearsolver::SUNLinearSolver_Type,
+    mass_mem: Box<crate::arkode_ls_impl::ARKLsMassMem>,
+) -> i32 {
+    let mut step_mem = match arkStep_AccessStepMem(ark_mem, "arkStep_AttachMasssol") {
+        None => return ARK_MEM_NULL,
+        Some(sm) => sm,
+    };
+
+    /* free any existing mass matrix solver */
+    if let Some(old_mfree) = step_mem.mfree {
+        old_mfree(ark_mem);
+    }
+
+    /* Attach the provided routines, data structure and solve type */
+    step_mem.minit = minit;
+    step_mem.msetup = msetup;
+    step_mem.mmult = mmult;
+    step_mem.msolve = msolve;
+    step_mem.mfree = mfree;
+    step_mem.mass_type = if time_dep { MASS_TIMEDEP } else { MASS_FIXED };
+    step_mem.msolve_type = msolve_type;
+    ark_mem.mass_mem = Some(mass_mem);
+
+    /* Attach mmult function pointer to ark_mem as well */
+    ark_mem.step_mmult = mmult;
+
+    ark_mem.step_mem = Some(step_mem);
+    ARK_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkStep_DisableMSetup:
+
+  This routine NULLifies the msetup function pointer in the
+  ARKStep module.
+  ---------------------------------------------------------------*/
+pub fn arkStep_DisableMSetup(ark_mem: &mut ARKodeMem) {
+    if let Some(b) = ark_mem.step_mem.as_mut() {
+        if let Some(step_mem) = b.downcast_mut::<ARKodeARKStepMem>() {
+            step_mem.msetup = None;
+        }
+    }
+}
+
+/*---------------------------------------------------------------
   arkStep_GetLmem:
 
   This routine returns the system linear solver interface memory
@@ -506,6 +572,18 @@ pub fn arkStep_DisableLSetup(ark_mem: &mut ARKodeMem) {
   ---------------------------------------------------------------*/
 pub fn arkStep_GetLmem(ark_mem: &mut ARKodeMem) -> Option<Box<crate::arkode_ls_impl::ARKLsMem>> {
     ark_mem.lmem.take()
+}
+
+/*---------------------------------------------------------------
+  arkStep_GetMassMem:
+
+  This routine returns the mass matrix solver interface memory
+  (take semantics; put-back writes ark_mem.mass_mem).
+  ---------------------------------------------------------------*/
+pub fn arkStep_GetMassMem(
+    ark_mem: &mut ARKodeMem,
+) -> Option<Box<crate::arkode_ls_impl::ARKLsMassMem>> {
+    ark_mem.mass_mem.take()
 }
 
 /*---------------------------------------------------------------
@@ -741,9 +819,11 @@ fn arkStep_Init_inner(
         if step_mem.cvals.is_empty() {
             step_mem.cvals = vec![ZERO; step_mem.nfusedopvecs as usize];
             ark_mem.lrw += step_mem.nfusedopvecs as i64;
+            /* (Xvecs assembled at call sites; keep the C liw accounting —
+               C allocates Xvecs alongside cvals and only then adds liw,
+               so a ReInit does not re-count it) */
+            ark_mem.liw += step_mem.nfusedopvecs as i64;
         }
-        /* (Xvecs assembled at call sites; keep the C liw accounting) */
-        ark_mem.liw += step_mem.nfusedopvecs as i64;
 
         /* Allocate workspace for MRI forcing */
         if step_mem.stage_times.is_empty() {
@@ -783,8 +863,63 @@ fn arkStep_Init_inner(
        (adjoint TakeStep pending the adjoint machinery) */
     ark_mem.step = Some(arkStep_TakeStep_Z);
 
-    /* (mass/system linear solver consistency check and mass init/setup:
-       mass half not ported, mass_type stays MASS_IDENTITY) */
+    /* Check for consistency between mass system and system linear system
+       modules (e.g., if lsolve is direct, msolve needs to match) */
+    if step_mem.mass_type != MASS_IDENTITY && ark_mem.lmem.is_some() {
+        if step_mem.lsolve_type != step_mem.msolve_type {
+            arkProcessError(
+                Some(ark_mem),
+                ARK_ILL_INPUT,
+                line!(),
+                "arkStep_Init",
+                file!(),
+                "Incompatible linear and mass matrix solvers",
+            );
+            return ARK_ILL_INPUT;
+        }
+    }
+
+    /* Perform mass matrix solver initialization and setup (if applicable) */
+    if step_mem.mass_type != MASS_IDENTITY {
+        /* Call minit (if it exists) */
+        if let Some(minit) = step_mem.minit {
+            let retval = minit(ark_mem);
+            if retval != 0 {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_MASSINIT_FAIL,
+                    line!(),
+                    "arkStep_Init",
+                    file!(),
+                    "The mass matrix solver's init routine failed.",
+                );
+                return ARK_MASSINIT_FAIL;
+            }
+        }
+
+        /* Call msetup (if it exists) */
+        if let Some(msetup) = step_mem.msetup {
+            let tcur = ark_mem.tcur;
+            let mut t1 = std::mem::take(&mut ark_mem.tempv1);
+            let mut t2 = std::mem::take(&mut ark_mem.tempv2);
+            let mut t3 = std::mem::take(&mut ark_mem.tempv3);
+            let retval = msetup(ark_mem, tcur, &mut t1, &mut t2, &mut t3);
+            ark_mem.tempv1 = t1;
+            ark_mem.tempv2 = t2;
+            ark_mem.tempv3 = t3;
+            if retval != 0 {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARK_MASSSETUP_FAIL,
+                    line!(),
+                    "arkStep_Init",
+                    file!(),
+                    "The mass matrix solver's setup routine failed.",
+                );
+                return ARK_MASSSETUP_FAIL;
+            }
+        }
+    }
 
     /* Call linit (if it exists) */
     if let Some(linit) = step_mem.linit {
@@ -845,7 +980,17 @@ fn arkStep_FullRHS_inner(
     f: &mut NVector,
     mode: i32,
 ) -> i32 {
-    /* (mass-matrix setup: mass half not ported) */
+    /* setup mass-matrix if required (use output f as a temporary) */
+    if let (MASS_TIMEDEP, Some(msetup)) = (step_mem.mass_type, step_mem.msetup) {
+        let mut t2 = std::mem::take(&mut ark_mem.tempv2);
+        let mut t3 = std::mem::take(&mut ark_mem.tempv3);
+        let retval = msetup(ark_mem, t, f, &mut t2, &mut t3);
+        ark_mem.tempv2 = t2;
+        ark_mem.tempv3 = t3;
+        if retval != ARK_SUCCESS {
+            return ARK_MASSSETUP_FAIL;
+        }
+    }
 
     /* perform RHS functions contingent on 'mode' argument */
     match mode {
@@ -911,6 +1056,24 @@ fn arkStep_FullRHS_inner(
                             );
                             return ARK_RHSFUNC_FAIL;
                         }
+
+                        /* compute and store M(t)^{-1} fi */
+                        if step_mem.mass_type == MASS_TIMEDEP {
+                            let msolve = step_mem.msolve.unwrap();
+                            let tol = step_mem.nlscoef / ark_mem.h;
+                            let retval = msolve(ark_mem, &mut step_mem.Fi[0], tol);
+                            if retval != 0 {
+                                arkProcessError(
+                                    Some(ark_mem),
+                                    ARK_MASSSOLVE_FAIL,
+                                    line!(),
+                                    "arkStep_FullRHS",
+                                    file!(),
+                                    "Mass matrix solver failure",
+                                );
+                                return ARK_MASSSOLVE_FAIL;
+                            }
+                        }
                     }
 
                     /* compute the explicit component */
@@ -931,6 +1094,24 @@ fn arkStep_FullRHS_inner(
                                 ),
                             );
                             return ARK_RHSFUNC_FAIL;
+                        }
+
+                        /* compute and store M(t)^{-1} fe */
+                        if step_mem.mass_type == MASS_TIMEDEP {
+                            let msolve = step_mem.msolve.unwrap();
+                            let tol = step_mem.nlscoef / ark_mem.h;
+                            let retval = msolve(ark_mem, &mut step_mem.Fe[0], tol);
+                            if retval != 0 {
+                                arkProcessError(
+                                    Some(ark_mem),
+                                    ARK_MASSSOLVE_FAIL,
+                                    line!(),
+                                    "arkStep_FullRHS",
+                                    file!(),
+                                    "Mass matrix solver failure",
+                                );
+                                return ARK_MASSSOLVE_FAIL;
+                            }
                         }
                     }
                 } else {
@@ -961,6 +1142,24 @@ fn arkStep_FullRHS_inner(
             } else {
                 /* explicit */
                 N_VScale(ONE, &step_mem.Fe[0], f);
+            }
+
+            /* compute M^{-1} f for output but do not store */
+            if step_mem.mass_type == MASS_FIXED {
+                let msolve = step_mem.msolve.unwrap();
+                let tol = step_mem.nlscoef / ark_mem.h;
+                let retval = msolve(ark_mem, f, tol);
+                if retval != 0 {
+                    arkProcessError(
+                        Some(ark_mem),
+                        ARK_MASSSOLVE_FAIL,
+                        line!(),
+                        "arkStep_FullRHS",
+                        file!(),
+                        "Mass matrix solver failure",
+                    );
+                    return ARK_MASSSOLVE_FAIL;
+                }
             }
         }
 
@@ -1036,6 +1235,24 @@ fn arkStep_FullRHS_inner(
             } else {
                 /* explicit */
                 N_VScale(ONE, &ark_mem.tempv2, f);
+            }
+
+            /* compute M^{-1} f for output but do not store */
+            if step_mem.mass_type != MASS_IDENTITY {
+                let msolve = step_mem.msolve.unwrap();
+                let tol = step_mem.nlscoef / ark_mem.h;
+                let retval = msolve(ark_mem, f, tol);
+                if retval != 0 {
+                    arkProcessError(
+                        Some(ark_mem),
+                        ARK_MASSSOLVE_FAIL,
+                        line!(),
+                        "arkStep_FullRHS",
+                        file!(),
+                        "Mass matrix solver failure",
+                    );
+                    return ARK_MASSSOLVE_FAIL;
+                }
             }
         }
 
@@ -1281,7 +1498,20 @@ fn arkStep_TakeStep_Z_inner(
             ark_mem.tcur = ark_mem.tn + step_mem.Be.as_ref().unwrap().c[is as usize] * ark_mem.h;
         }
 
-        /* (time-dependent mass matrix setup: mass half not ported) */
+        /* setup time-dependent mass matrix */
+        if let (MASS_TIMEDEP, Some(msetup)) = (step_mem.mass_type, step_mem.msetup) {
+            let tcur = ark_mem.tcur;
+            let mut t1 = std::mem::take(&mut ark_mem.tempv1);
+            let mut t2 = std::mem::take(&mut ark_mem.tempv2);
+            let mut t3 = std::mem::take(&mut ark_mem.tempv3);
+            let retval = msetup(ark_mem, tcur, &mut t1, &mut t2, &mut t3);
+            ark_mem.tempv1 = t1;
+            ark_mem.tempv2 = t2;
+            ark_mem.tempv3 = t3;
+            if retval != ARK_SUCCESS {
+                return ARK_MASSSETUP_FAIL;
+            }
+        }
 
         /* if implicit, call built-in and user-supplied predictors
            (results placed in zpred) */
@@ -1323,7 +1553,18 @@ fn arkStep_TakeStep_Z_inner(
 
             /* otherwise no implicit solve is needed */
         } else {
-            /* (fixed mass matrix solve: mass half not ported) */
+            /* if M is fixed, solve with it to compute update (place back
+               in sdata) */
+            if step_mem.mass_type == MASS_FIXED {
+                /* perform solve; return with positive value on anything
+                   but success */
+                let msolve = step_mem.msolve.unwrap();
+                let tol = step_mem.nlscoef;
+                *nflagPtr = msolve(ark_mem, &mut step_mem.sdata, tol);
+                if *nflagPtr != ARK_SUCCESS {
+                    return TRY_AGAIN;
+                }
+            }
 
             /* set y to be yn + sdata (either computed in arkStep_StageSetup,
                or updated in prev. block) */
@@ -1393,8 +1634,19 @@ fn arkStep_TakeStep_Z_inner(
                 if retval > 0 {
                     return ARK_UNREC_RHSFUNC_ERR;
                 }
+            } else if step_mem.mass_type == MASS_FIXED {
+                let mmult = step_mem.mmult.unwrap();
+                let mut t1 = std::mem::take(&mut ark_mem.tempv1);
+                let retval = mmult(ark_mem, &step_mem.zcor, &mut t1);
+                if retval != ARK_SUCCESS {
+                    ark_mem.tempv1 = t1;
+                    return ARK_MASSMULT_FAIL;
+                }
+                let g = step_mem.gamma;
+                let ARKodeARKStepMem { sdata, Fi, .. } = &mut **step_mem;
+                N_VLinearSum(ONE / g, &t1, -ONE / g, sdata, &mut Fi[is as usize]);
+                ark_mem.tempv1 = t1;
             } else {
-                /* (MASS_FIXED deduce branch: mass half not ported) */
                 let g = step_mem.gamma;
                 let ARKodeARKStepMem { zcor, sdata, Fi, .. } = &mut **step_mem;
                 N_VLinearSum(ONE / g, zcor, -ONE / g, sdata, &mut Fi[is as usize]);
@@ -1416,7 +1668,28 @@ fn arkStep_TakeStep_Z_inner(
             }
         }
 
-        /* (M(t)^{-1} updates of Fe/Fi: mass half not ported) */
+        /* if using a time-dependent mass matrix, update Fe[is] and/or
+           Fi[is] with M(t)^{-1} */
+        if step_mem.mass_type == MASS_TIMEDEP {
+            /* If the implicit stage was deduced, it already includes
+               M(t)^{-1} */
+            if step_mem.implicit && !deduce_stage {
+                let msolve = step_mem.msolve.unwrap();
+                let tol = step_mem.nlscoef;
+                *nflagPtr = msolve(ark_mem, &mut step_mem.Fi[is as usize], tol);
+                if *nflagPtr != ARK_SUCCESS {
+                    return TRY_AGAIN;
+                }
+            }
+            if step_mem.explicit {
+                let msolve = step_mem.msolve.unwrap();
+                let tol = step_mem.nlscoef;
+                *nflagPtr = msolve(ark_mem, &mut step_mem.Fe[is as usize], tol);
+                if *nflagPtr != ARK_SUCCESS {
+                    return TRY_AGAIN;
+                }
+            }
+        }
     } /* loop over stages */
 
     /* compute time-evolved solution (in ark_ycur), error estimate (in dsm).
@@ -1424,7 +1697,11 @@ fn arkStep_TakeStep_Z_inner(
        solve, so handle that appropriately. */
     ark_mem.tcur = ark_mem.tn + ark_mem.h;
 
-    *nflagPtr = arkStep_ComputeSolutions(ark_mem, step_mem, dsmPtr);
+    *nflagPtr = if step_mem.mass_type == MASS_FIXED {
+        arkStep_ComputeSolutions_MassFixed(ark_mem, step_mem, dsmPtr)
+    } else {
+        arkStep_ComputeSolutions(ark_mem, step_mem, dsmPtr)
+    };
     if *nflagPtr < 0 {
         return *nflagPtr;
     }
@@ -2114,7 +2391,17 @@ pub(crate) fn arkStep_StageSetup(
         N_VLinearSum(ONE, &ark_mem.yn, -ONE, zpred, sdata);
     }
 
-    /* (implicit with fixed M != I: mass half not ported) */
+    /* If implicit with fixed M!=I, update sdata with M*sdata */
+    if implicit && step_mem.mass_type == MASS_FIXED {
+        let mmult = step_mem.mmult.unwrap();
+        let mut t1 = std::mem::take(&mut ark_mem.tempv1);
+        t1.data.copy_from_slice(&step_mem.sdata.data);
+        let retval = mmult(ark_mem, &t1, &mut step_mem.sdata);
+        ark_mem.tempv1 = t1;
+        if retval != ARK_SUCCESS {
+            return ARK_MASSMULT_FAIL;
+        }
+    }
 
     /* Update sdata with prior stage information: assemble the fused-op
        operand list (Xvecs at call site; in-place accumulate variant when
@@ -2359,6 +2646,95 @@ mod tests {
         assert!(SUNRabs(y.data[0] - 1.0f64.atan()) < 1.0e-3);
     }
 
+    /* Fixed non-identity mass matrix: solve M*y' = fi(t,y) with
+       M = 2*I and fi = -2*y, i.e. y' = -y with y(0)=1, so
+       y(t) = exp(-t).  Exercises ARKodeSetMassLinearSolver/SetMassFn
+       (direct dense), the MASS_FIXED stage/residual/solution paths
+       (A = M - gamma*J in arkLsLinSys, M*(yn-zp) in StageSetup,
+       NlsResidual_MassFixed, ComputeSolutions_MassFixed) and the
+       mass statistics. */
+    #[test]
+    fn arkstep_fixed_mass_matrix() {
+        use crate::arkode_ls::{
+            ARKodeGetNumMassSetups, ARKodeGetNumMassSolves, ARKodeSetJacFn,
+            ARKodeSetLinearSolver, ARKodeSetMassFn, ARKodeSetMassLinearSolver,
+        };
+
+        fn fi_mass(_t: f64, y: &NVector, ydot: &mut NVector, _ud: &mut UserData) -> i32 {
+            ydot.data[0] = -2.0 * y.data[0];
+            0
+        }
+        fn jac_mass(
+            _t: f64,
+            _y: &NVector,
+            _fy: &NVector,
+            j: &mut crate::sundials_matrix::SUNMatrix,
+            _ud: &mut UserData,
+            _t1: &mut NVector,
+            _t2: &mut NVector,
+            _t3: &mut NVector,
+        ) -> i32 {
+            if let crate::sundials_matrix::SUNMatrix::Dense(dm) = j {
+                dm.data[0] = -2.0;
+            }
+            0
+        }
+        fn mass_fn(
+            _t: f64,
+            m: &mut crate::sundials_matrix::SUNMatrix,
+            _ud: &mut UserData,
+            _t1: &mut NVector,
+            _t2: &mut NVector,
+            _t3: &mut NVector,
+        ) -> i32 {
+            if let crate::sundials_matrix::SUNMatrix::Dense(dm) = m {
+                dm.data[0] = 2.0;
+            }
+            0
+        }
+
+        let ctx = SUNContext_Create();
+        let mut y = NVector::new(1);
+        y.data[0] = 1.0;
+        let mut ark = ARKStepCreate(None, Some(fi_mass), 0.0, &y, &ctx).unwrap();
+        assert_eq!(ARKodeSStolerances(&mut ark, 1.0e-6, 1.0e-10), ARK_SUCCESS);
+
+        /* system solver (dense) */
+        let a = crate::sunmatrix_dense::SUNDenseMatrix(1, 1, &ctx);
+        let ls = crate::sunlinsol_dense::SUNLinSol_Dense(&y, &a, &ctx);
+        assert_eq!(
+            ARKodeSetLinearSolver(&mut ark, ls, Some(a)),
+            crate::arkode_ls_impl::ARKLS_SUCCESS
+        );
+        assert_eq!(ARKodeSetJacFn(&mut ark, Some(jac_mass)), 0);
+
+        /* mass solver (dense, time-independent) */
+        let m = crate::sunmatrix_dense::SUNDenseMatrix(1, 1, &ctx);
+        let mls = crate::sunlinsol_dense::SUNLinSol_Dense(&y, &m, &ctx);
+        assert_eq!(
+            ARKodeSetMassLinearSolver(&mut ark, mls, Some(m), false),
+            crate::arkode_ls_impl::ARKLS_SUCCESS
+        );
+        assert_eq!(ARKodeSetMassFn(&mut ark, Some(mass_fn)), 0);
+
+        let mut t = 0.0;
+        let flag = ARKodeEvolve(&mut ark, 1.0, &mut y, &mut t, ARK_NORMAL);
+        assert!(flag >= 0, "ARKodeEvolve flag = {}", flag);
+        assert!(
+            SUNRabs(y.data[0] - (-1.0f64).exp()) < 1.0e-5,
+            "y(1) = {} vs exp(-1) = {}",
+            y.data[0],
+            (-1.0f64).exp()
+        );
+
+        /* mass statistics were exercised */
+        let (mut nmsetups, mut nmsolves) = (0i64, 0i64);
+        assert_eq!(ARKodeGetNumMassSetups(&mut ark, &mut nmsetups), 0);
+        assert_eq!(ARKodeGetNumMassSolves(&mut ark, &mut nmsolves), 0);
+        assert!(nmsetups > 0, "nmsetups = {}", nmsetups);
+        assert!(nmsolves > 0, "nmsolves = {}", nmsolves);
+    }
+
     /* ARKStepSetTables (implicit-only) copies a user table into step
        memory and switches to purely implicit mode. */
     #[test]
@@ -2379,4 +2755,155 @@ mod tests {
         assert!(sm.Bi.is_some() && sm.Be.is_none());
         ark.step_mem = Some(sm);
     }
+}
+
+/*---------------------------------------------------------------
+  arkStep_ComputeSolutions_MassFixed
+
+  This routine calculates the final RK solution using the existing
+  data.  This solution is placed directly in ark_ycur.  This
+  routine also computes the error estimate ||y-ytilde||_WRMS,
+  where ytilde is the embedded solution, and the norm weights come
+  from ark_ewt.  This norm value is returned.  The vector form of
+  this estimated error (y-ytilde) is stored in ark_mem->tempv1, in
+  case the calling routine wishes to examine the error locations.
+
+  This version assumes a fixed mass matrix.
+  ---------------------------------------------------------------*/
+pub(crate) fn arkStep_ComputeSolutions_MassFixed(
+    ark_mem: &mut ARKodeMem,
+    step_mem: &mut ARKodeARKStepMem,
+    dsmPtr: &mut f64,
+) -> i32 {
+    /* initialize output */
+    *dsmPtr = ZERO;
+
+    /* check if the method is stiffly accurate */
+    let mut stiffly_accurate = true;
+    if step_mem.explicit
+        && !ARKodeButcherTable_IsStifflyAccurate(step_mem.Be.as_ref().unwrap())
+    {
+        stiffly_accurate = false;
+    }
+    if step_mem.implicit
+        && !ARKodeButcherTable_IsStifflyAccurate(step_mem.Bi.as_ref().unwrap())
+    {
+        stiffly_accurate = false;
+    }
+
+    /* If the method is stiffly accurate, ycur is already the new solution */
+
+    if !stiffly_accurate {
+        /* compute y RHS (store in y) */
+        /*   set arrays for fused vector operation */
+        let mut cv: Vec<f64> = Vec::new();
+        for j in 0..step_mem.stages as usize {
+            if step_mem.explicit {
+                /* Explicit pieces */
+                cv.push(ark_mem.h * step_mem.Be.as_ref().unwrap().b[j]);
+            }
+            if step_mem.implicit {
+                /* Implicit pieces */
+                cv.push(ark_mem.h * step_mem.Bi.as_ref().unwrap().b[j]);
+            }
+        }
+
+        /*   call fused vector operation to compute RHS */
+        {
+            let ARKodeMem { ycur, .. } = ark_mem;
+            let mut xr: Vec<&NVector> = Vec::new();
+            for j in 0..step_mem.stages as usize {
+                if step_mem.explicit {
+                    xr.push(&step_mem.Fe[j]);
+                }
+                if step_mem.implicit {
+                    xr.push(&step_mem.Fi[j]);
+                }
+            }
+            N_VLinearCombination(cv.len() as i32, &cv, &xr, ycur);
+        }
+
+        /* solve for y update (stored in y) */
+        {
+            let msolve = step_mem.msolve.unwrap();
+            let tol = step_mem.nlscoef;
+            let mut y = std::mem::take(&mut ark_mem.ycur);
+            let retval = msolve(ark_mem, &mut y, tol);
+            ark_mem.ycur = y;
+            if retval < 0 {
+                *dsmPtr = 2.0; /* indicate too much error, step with smaller step */
+                let ARKodeMem { yn, ycur, .. } = ark_mem;
+                ycur.data.copy_from_slice(&yn.data); /* place old solution into y */
+                return CONV_FAIL;
+            }
+        }
+
+        /* compute y = yn + update */
+        {
+            let ARKodeMem { yn, ycur, .. } = ark_mem;
+            ycur.linear_sum_with(ONE, ONE, yn);
+        }
+
+        if let Some(post) = ark_mem.PostProcessStepFn {
+            let ARKodeMem { ycur, user_data, tcur, .. } = ark_mem;
+            let retval = post(*tcur, ycur, user_data);
+            if retval != 0 {
+                return ARK_POSTPROCESS_STEP_FAIL;
+            }
+        }
+    }
+
+    /* compute yerr (if step adaptivity enabled) */
+    if !ark_mem.fixedstep {
+        /* compute yerr RHS vector */
+        /*   set arrays for fused vector operation */
+        let mut cv: Vec<f64> = Vec::new();
+        for j in 0..step_mem.stages as usize {
+            if step_mem.explicit {
+                /* Explicit pieces */
+                let be = step_mem.Be.as_ref().unwrap();
+                let d = be.d.as_ref().unwrap();
+                cv.push(ark_mem.h * (be.b[j] - d[j]));
+            }
+            if step_mem.implicit {
+                /* Implicit pieces */
+                let bi = step_mem.Bi.as_ref().unwrap();
+                let d = bi.d.as_ref().unwrap();
+                cv.push(ark_mem.h * (bi.b[j] - d[j]));
+            }
+        }
+
+        /*   call fused vector operation to compute yerr RHS */
+        {
+            let ARKodeMem { tempv1, .. } = ark_mem;
+            let mut xr: Vec<&NVector> = Vec::new();
+            for j in 0..step_mem.stages as usize {
+                if step_mem.explicit {
+                    xr.push(&step_mem.Fe[j]);
+                }
+                if step_mem.implicit {
+                    xr.push(&step_mem.Fi[j]);
+                }
+            }
+            N_VLinearCombination(cv.len() as i32, &cv, &xr, tempv1);
+        }
+
+        /* solve for yerr */
+        {
+            let msolve = step_mem.msolve.unwrap();
+            let tol = step_mem.nlscoef;
+            let mut yerr = std::mem::take(&mut ark_mem.tempv1);
+            let retval = msolve(ark_mem, &mut yerr, tol);
+            ark_mem.tempv1 = yerr;
+            if retval < 0 {
+                *dsmPtr = 2.0; /* next attempt will reduce step by 'etacf';
+                               insert dsmPtr placeholder here */
+                return CONV_FAIL;
+            }
+        }
+        /* fill error norm */
+        *dsmPtr = N_VWrmsNorm(&ark_mem.tempv1, &ark_mem.ewt);
+    }
+
+    ARK_SUCCESS
 }

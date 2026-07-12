@@ -10,8 +10,6 @@
  * when (re)installing (mass_type / predictor / autonomous), so the
  * dispatch is evaluated at the call, with identical results.
  *
- * Not yet ported (pending the ARKLS mass half): the
- * MassFixed/MassTDep residual and fixed-point function variants.
  *
  * lsetup/lsolve op re-entries need step_mem installed in ark_mem
  * (arkLsSetup/arkLsSolve call step_getgammas etc.), so the wrappers
@@ -643,11 +641,47 @@ fn arkStep_NlsResidual(
         N_VLinearSum(ONE, zpred, ONE, zcor, &mut ark_mem.ycur);
     }
 
-    /* TrivialPredAutonomous variant: reuse the saved implicit RHS
-       evaluation on the first iteration */
+    /* MassTDep variant: r = M(t)*(zcor - sdata) - gamma*Fi(z) */
+    if step_mem.mass_type == MASS_TIMEDEP {
+        /* put M*(zcor - sdata) in r (use Fi[is] as temporary storage) */
+        {
+            let ARKodeARKStepMem { zcor, sdata, Fi, .. } = &mut **step_mem;
+            N_VLinearSum(ONE, zcor, -ONE, sdata, &mut Fi[istage]);
+        }
+        let mmult = step_mem.mmult.unwrap();
+        let retval = mmult(ark_mem, &step_mem.Fi[istage], r);
+        if retval != ARK_SUCCESS {
+            return ARK_MASSMULT_FAIL;
+        }
+
+        /* call the user-supplied pre-RHS function (if supplied), then call RHS */
+        if let Some(pre_rhs) = ark_mem.PreRhsFn {
+            let ARKodeMem { ycur, user_data, tcur, .. } = ark_mem;
+            let retval = pre_rhs(*tcur, ycur, user_data);
+            if retval != 0 {
+                return ARK_PRERHSFN_FAIL;
+            }
+        }
+        let nls_fi = step_mem.nls_fi.unwrap();
+        let ARKodeMem { ycur, user_data, tcur, .. } = ark_mem;
+        let retval = nls_fi(*tcur, ycur, &mut step_mem.Fi[istage], user_data);
+        step_mem.nfi += 1;
+        if retval < 0 {
+            return ARK_RHSFUNC_FAIL;
+        }
+        if retval > 0 {
+            return RHSFUNC_RECVR;
+        }
+
+        /* compute residual via linear sum */
+        r.linear_sum_with(ONE, -step_mem.gamma, &step_mem.Fi[istage]);
+        return ARK_SUCCESS;
+    }
+
+    /* TrivialPredAutonomous variant (MassIdent / MassFixed): reuse the
+       saved implicit RHS evaluation on the first iteration */
     let tpa = step_mem.predictor == 0
         && step_mem.autonomous
-        && step_mem.mass_type == MASS_IDENTITY
         && step_mem.fn_implicit != FnImplicitAlias::None;
     if tpa && nls_iter == 0 {
         match step_mem.fn_implicit {
@@ -684,11 +718,29 @@ fn arkStep_NlsResidual(
         }
     }
 
-    /* compute residual via linear combination */
-    let c = [ONE, -ONE, -step_mem.gamma];
-    let ARKodeARKStepMem { zcor, sdata, Fi, .. } = &mut **step_mem;
-    let x: [&NVector; 3] = [zcor, sdata, &Fi[istage]];
-    N_VLinearCombination(3, &c, &x, r);
+    if step_mem.mass_type == MASS_FIXED {
+        /* put M*zcor in r, then r = r - sdata - gamma*Fi */
+        let mmult = step_mem.mmult.unwrap();
+        let retval = mmult(ark_mem, &step_mem.zcor, r);
+        if retval != ARK_SUCCESS {
+            return ARK_MASSMULT_FAIL;
+        }
+        /* z == X[0] with c0 == 1: in-place accumulate form of the
+           3-term N_VLinearCombination */
+        let ARKodeARKStepMem { sdata, Fi, gamma, .. } = &mut **step_mem;
+        for e in 0..r.data.len() {
+            r.data[e] += -ONE * sdata.data[e];
+        }
+        for e in 0..r.data.len() {
+            r.data[e] += -*gamma * Fi[istage].data[e];
+        }
+    } else {
+        /* compute residual via linear combination */
+        let c = [ONE, -ONE, -step_mem.gamma];
+        let ARKodeARKStepMem { zcor, sdata, Fi, .. } = &mut **step_mem;
+        let x: [&NVector; 3] = [zcor, sdata, &Fi[istage]];
+        N_VLinearCombination(3, &c, &x, r);
+    }
 
     ARK_SUCCESS
 }
@@ -852,11 +904,12 @@ fn arkStep_NlsFPFunction(
         N_VLinearSum(ONE, zpred, ONE, zcor, &mut ark_mem.ycur);
     }
 
-    /* TrivialPredAutonomous variant: reuse the saved implicit RHS
-       evaluation on the first iteration */
+    /* TrivialPredAutonomous variant (MassIdent / MassFixed; the
+       MassTDep fixed-point function has no TPA form): reuse the saved
+       implicit RHS evaluation on the first iteration */
     let tpa = step_mem.predictor == 0
         && step_mem.autonomous
-        && step_mem.mass_type == MASS_IDENTITY
+        && step_mem.mass_type != MASS_TIMEDEP
         && step_mem.fn_implicit != FnImplicitAlias::None;
     if tpa && nls_iter == 0 {
         match step_mem.fn_implicit {
@@ -893,10 +946,42 @@ fn arkStep_NlsFPFunction(
         }
     }
 
-    /* combine parts:  g = gamma*Fi(z) + sdata */
-    {
-        let ARKodeARKStepMem { sdata, Fi, gamma, .. } = &mut **step_mem;
-        N_VLinearSum(*gamma, &Fi[istage], ONE, sdata, g);
+    if step_mem.mass_type == MASS_TIMEDEP {
+        /* copy gamma*Fi into g, perform mass matrix solve, then
+           combine parts:  g = g + sdata */
+        {
+            let ARKodeARKStepMem { Fi, gamma, .. } = &mut **step_mem;
+            N_VScale(*gamma, &Fi[istage], g);
+        }
+        let msolve = step_mem.msolve.unwrap();
+        let tol = step_mem.nlscoef;
+        let retval = msolve(ark_mem, g, tol);
+        if retval < 0 {
+            return ARK_RHSFUNC_FAIL;
+        }
+        if retval > 0 {
+            return RHSFUNC_RECVR;
+        }
+        g.linear_sum_with(ONE, ONE, &step_mem.sdata);
+    } else {
+        /* combine parts:  g = gamma*Fi(z) + sdata */
+        {
+            let ARKodeARKStepMem { sdata, Fi, gamma, .. } = &mut **step_mem;
+            N_VLinearSum(*gamma, &Fi[istage], ONE, sdata, g);
+        }
+
+        /* perform mass matrix solve (fixed mass matrix) */
+        if step_mem.mass_type == MASS_FIXED {
+            let msolve = step_mem.msolve.unwrap();
+            let tol = step_mem.nlscoef;
+            let retval = msolve(ark_mem, g, tol);
+            if retval < 0 {
+                return ARK_RHSFUNC_FAIL;
+            }
+            if retval > 0 {
+                return RHSFUNC_RECVR;
+            }
+        }
     }
 
     ARK_SUCCESS

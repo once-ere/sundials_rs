@@ -145,7 +145,7 @@ example.
 
 | example | status |
 |---|---|
-| ark_KrylovDemo_prec | todo |
+| ark_KrylovDemo_prec | IDENTICAL incl. _1/_2 nrmfactor arg variants (shipped refs; matrix-free SPGMR + user Precond/PSolve + DQ Jtimes + ARKStepReInit + workspace accounting, all four jpre/gstype runs byte-exact) |
 | ark_advection_diffusion_reaction_splitting | todo |
 | ark_analytic | IDENTICAL (shipped ref; first implicit ARKStep example — DIRK + Newton + dense ARKLS + SetLinear, verified byte-exact). Arg-variant refs (table_names override) pending the CLI module |
 | ark_analytic_lsrk | todo |

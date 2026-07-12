@@ -483,10 +483,11 @@ fn erkStep_Init_inner(
     if step_mem.cvals.is_empty() {
         step_mem.cvals = vec![0.0; step_mem.nfusedopvecs as usize];
         ark_mem.lrw += step_mem.nfusedopvecs as i64;
+        /* (Xvecs pointer array: operands are assembled at the call sites;
+        keep the C liw accounting — C allocates Xvecs alongside cvals and
+        only then adds liw, so a ReInit does not re-count it) */
+        ark_mem.liw += step_mem.nfusedopvecs as i64;
     }
-    /* (Xvecs pointer array: operands are assembled at the call sites;
-    keep the C liw accounting) */
-    ark_mem.liw += step_mem.nfusedopvecs as i64;
 
     /* Allocate workspace for MRI forcing -- need to allocate here as the
     number of stages may not be set before this point */

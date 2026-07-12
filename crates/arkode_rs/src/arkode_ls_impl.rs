@@ -10,10 +10,12 @@
  * and put-back writes the field.  This avoids a double-nested
  * take/put-back (step_mem -> lmem) in every ARKLS call.
  *
- * Mass-matrix interface (ARKLsMassMemRec and the arkLsMass* family)
- * is not yet ported; no serial example verified so far requires a
- * non-identity mass matrix.  It will land with arkode_arkstep mass
- * support.
+ * The mass-matrix interface (ARKLsMassMemRec) follows the same
+ * hoisting convention: the box lives on ARKodeMem.mass_mem and the
+ * step_getmassmem op takes it out.  M_lu: C aliases M for iterative
+ * solvers (which never use the matrix operand) and clones it for
+ * direct solvers; here M_lu is only populated (owned) in the direct
+ * case.
  * -----------------------------------------------------------------*/
 use crate::nvector_serial::NVector;
 use crate::sundials_linearsolver::LinearSolver;
@@ -215,3 +217,53 @@ pub const MSG_LS_JACFUNC_FAILED: &str =
     "The Jacobian routine failed in an unrecoverable manner.";
 pub const MSG_LS_SUNMAT_FAILED: &str =
     "A SUNMatrix routine failed in an unrecoverable manner.";
+
+/* -----------------------------------------------------------------
+   Types : ARKLsMassMemRec, ARKLsMassMem
+   -----------------------------------------------------------------*/
+pub struct ARKLsMassMem {
+    /* Linear solver type information */
+    pub iterative: bool,   /* is the solver iterative?    */
+    pub matrixbased: bool, /* is a matrix structure used? */
+
+    /* Mass matrix construction & storage.
+       C's M_data/mt_data/P_data pointers collapse onto
+       ark_mem.user_data. */
+    pub mass: Option<ARKLsMassFn>, /* user-provided mass matrix routine */
+    pub M: Option<SUNMatrix>,      /* mass matrix structure             */
+    pub M_lu: Option<SUNMatrix>,   /* factorization copy (direct only;
+                                   C aliases M for iterative)        */
+
+    /* Iterative solver tolerance */
+    pub eplifac: f64, /* nonlinear -> linear tol scaling factor  */
+    pub nrmfac: f64,  /* integrator -> LS norm conversion factor */
+
+    /* Statistics and associated parameters */
+    pub time_dependent: bool, /* flag whether M depends on t        */
+    pub msetuptime: f64,      /* "t" value at last msetup call      */
+    pub nmsetups: i64,        /* total # mass matrix-solver setups  */
+    pub nmsolves: i64,        /* total # mass matrix-solver solves  */
+    pub nmtsetup: i64,        /* total # calls to mtsetup           */
+    pub nmtimes: i64,         /* total # calls to mtimes            */
+    pub nmvsetup: i64,        /* total # calls to matvec setup      */
+    pub npe: i64,             /* total # pset calls                 */
+    pub nli: i64,             /* total # linear iterations          */
+    pub nps: i64,             /* total # psolve calls               */
+    pub ncfl: i64,            /* total # convergence failures       */
+
+    /* Linear solver, matrix and vector objects/pointers */
+    pub LS: LinearSolver, /* generic linear solver object           */
+    pub x: NVector,       /* solution vector for SUNLinSolSolve     */
+    /* (ycur pointer: unused in the ported serial paths)            */
+
+    /* Preconditioner computation (internal prec modules land with
+       arkode_bandpre/arkode_bbdpre) */
+    pub pset: Option<ARKLsMassPrecSetupFn>,
+    pub psolve: Option<ARKLsMassPrecSolveFn>,
+
+    /* Mass matrix times vector setup and product routines */
+    pub mtsetup: Option<ARKLsMassTimesSetupFn>,
+    pub mtimes: Option<ARKLsMassTimesVecFn>,
+
+    pub last_flag: i32, /* last error flag returned by any function */
+}

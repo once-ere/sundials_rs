@@ -1039,6 +1039,7 @@ fn arkLsBandDQJac(
   ---------------------------------------------------------------*/
 fn arkLsDQJtimes(
     ark_mem: &mut ARKodeMem,
+    ewt: &NVector,
     nfeDQ: &mut i64,
     Jt_f: ARKRhsFn,
     v: &NVector,
@@ -1048,8 +1049,10 @@ fn arkLsDQJtimes(
     fy: &NVector,
     work: &mut NVector,
 ) -> i32 {
-    /* Initialize perturbation to 1/||v|| */
-    let mut sig = ONE / N_VWrmsNorm(v, &ark_mem.ewt);
+    /* Initialize perturbation to 1/||v|| (the iterative solve detaches
+       ark_mem.ewt for the scaling vectors, so it arrives as an
+       argument — donor cvode_ls pattern) */
+    let mut sig = ONE / N_VWrmsNorm(v, ewt);
     let mut retval = 0;
 
     for _iter in 0..MAX_DQITERS {
@@ -1264,8 +1267,12 @@ pub fn arkLsInitialize(ark_mem: &mut ARKodeMem) -> i32 {
 }
 
 fn arkLsInitialize_inner(ark_mem: &mut ARKodeMem, arkls_mem: &mut ARKLsMem) -> i32 {
-    /* (mass-matrix interface not ported: step_getmassmem is always
-       absent, so the C massmem branches reduce to their NULL paths) */
+    /* access ARKLsMassMem (if applicable) */
+    let arkls_massmem = if ark_mem.step_getmassmem.is_some() {
+        ark_mem.mass_mem.take()
+    } else {
+        None
+    };
 
     /* Test for valid combinations of matrix & Jacobian routines: */
     if arkls_mem.A.is_some() {
@@ -1314,6 +1321,61 @@ fn arkLsInitialize_inner(ark_mem: &mut ARKodeMem, arkls_mem: &mut ARKLsMem) -> i
         arkls_mem.user_linsys = SUNFALSE;
         arkls_mem.linsys = None;
     }
+
+    /* Test for valid combination of system matrix and mass matrix
+       (if applicable) */
+    if let Some(mm) = &arkls_massmem {
+        /* A and M must both be NULL or non-NULL */
+        if arkls_mem.A.is_some() != mm.M.is_some() {
+            ark_mem.mass_mem = arkls_massmem;
+            arkProcessError(
+                Some(ark_mem),
+                ARKLS_ILL_INPUT,
+                line!(),
+                "arkLsInitialize",
+                file!(),
+                "Cannot combine NULL and non-NULL System and mass matrices",
+            );
+            arkls_mem.last_flag = ARKLS_ILL_INPUT;
+            return ARKLS_ILL_INPUT;
+        }
+
+        /* If A is non-NULL, A and M must have matching types */
+        if let (Some(a), Some(m)) = (&arkls_mem.A, &mm.M) {
+            if SUNMatGetID(a) != SUNMatGetID(m) {
+                ark_mem.mass_mem = arkls_massmem;
+                arkProcessError(
+                    Some(ark_mem),
+                    ARKLS_ILL_INPUT,
+                    line!(),
+                    "arkLsInitialize",
+                    file!(),
+                    "System and mass matrices have incompatible types",
+                );
+                arkls_mem.last_flag = ARKLS_ILL_INPUT;
+                return ARKLS_ILL_INPUT;
+            }
+        }
+
+        /* If either system or mass matrix solver is matrix-embedded,
+           then both must be */
+        if (arkls_mem.LS.ls_type() == SUNLINEARSOLVER_MATRIX_EMBEDDED)
+            != (mm.LS.ls_type() == SUNLINEARSOLVER_MATRIX_EMBEDDED)
+        {
+            ark_mem.mass_mem = arkls_massmem;
+            arkProcessError(
+                Some(ark_mem),
+                ARKLS_ILL_INPUT,
+                line!(),
+                "arkLsInitialize",
+                file!(),
+                "mismatched matrix-embedded LS types (system and mass must match)",
+            );
+            arkls_mem.last_flag = ARKLS_ILL_INPUT;
+            return ARKLS_ILL_INPUT;
+        }
+    }
+    ark_mem.mass_mem = arkls_massmem;
 
     /* reset counters */
     arkLsInitializeCounters(arkls_mem);
@@ -1440,10 +1502,32 @@ fn arkLsSetup_inner(
         || (convfail == ARK_FAIL_BAD_J && !dgamma_fail)
         || (convfail == ARK_FAIL_OTHER);
 
-    /* (mass matrix module not ported: M = NULL paths below) */
+    /* Check for mass matrix module and setup mass matrix */
+    let have_mass = ark_mem.step_getmassmem.is_some() && ark_mem.mass_mem.is_some();
+    if have_mass {
+        /* Setup mass matrix linear solver (including recomputation of
+           mass matrix) */
+        arkls_mem.last_flag = arkLsMassSetup(ark_mem, tpred, vtemp1, vtemp2, vtemp3);
+        if arkls_mem.last_flag != 0 {
+            arkProcessError(
+                Some(ark_mem),
+                ARKLS_SUNMAT_FAIL,
+                line!(),
+                "arkLsSetup",
+                file!(),
+                "Error setting up mass-matrix linear solver",
+            );
+            return arkls_mem.last_flag;
+        }
+    }
 
     /* Setup the linear system if necessary */
     if arkls_mem.A.is_some() {
+        /* Set shortcut to the mass matrix (NULL if matrix-free); take it
+           out of ark_mem for the duration of the linsys call */
+        let mass_taken = if have_mass { ark_mem.mass_mem.take() } else { None };
+        let m_ref: Option<&SUNMatrix> = mass_taken.as_ref().and_then(|mm| mm.M.as_ref());
+
         /* Update J if appropriate and evaluate A = I-gamma*J or A = M-gamma*J */
         let jok = !arkls_mem.jbad;
         let retval = if arkls_mem.user_linsys {
@@ -1453,7 +1537,7 @@ fn arkLsSetup_inner(
                 ypred,
                 fpred,
                 arkls_mem.A.as_mut().unwrap(),
-                None,
+                m_ref,
                 jok,
                 jcurPtr,
                 gamma,
@@ -1464,10 +1548,13 @@ fn arkLsSetup_inner(
             )
         } else {
             arkLsLinSys(
-                ark_mem, arkls_mem, tpred, ypred, fpred, None, jok, jcurPtr, gamma, vtemp1,
+                ark_mem, arkls_mem, tpred, ypred, fpred, m_ref, jok, jcurPtr, gamma, vtemp1,
                 vtemp2, vtemp3,
             )
         };
+        if mass_taken.is_some() {
+            ark_mem.mass_mem = mass_taken;
+        }
 
         /* Update J eval count and step when J was last updated */
         if *jcurPtr {
@@ -1828,7 +1915,7 @@ fn arkLsSolveIterative(
         /* call Jacobian-times-vector product routine
            (either user-supplied or internal DQ) */
         let jret = if jtimes_dq {
-            arkLsDQJtimes(ar, nfeDQ, jt_f.unwrap(), v, z, tnow, ynow, fnow, ytemp)
+            arkLsDQJtimes(ar, ewt_ref, nfeDQ, jt_f.unwrap(), v, z, tnow, ynow, fnow, ytemp)
         } else {
             let jt = jtimes.unwrap();
             jt(v, z, tnow, ynow, fnow, &mut ar.user_data, ytemp)
@@ -1838,8 +1925,20 @@ fn arkLsSolveIterative(
             return jret;
         }
 
-        /* (no mass matrix): z = v - gamma*z */
-        z.linear_sum_with(-gamma, ONE, v);
+        /* Compute mass matrix vector product and add to result */
+        if ar.step_getmassmem.is_some() && ar.mass_mem.is_some() {
+            let mut mm = ar.mass_mem.take().unwrap();
+            let mret = arkLsMTimes_inner(ar, &mut mm, v, ytemp);
+            ar.mass_mem = Some(mm);
+            if mret != 0 {
+                return mret;
+            }
+            /* z = ytemp - gamma*z */
+            z.linear_sum_with(-gamma, ONE, ytemp);
+        } else {
+            /* z = v - gamma*z */
+            z.linear_sum_with(-gamma, ONE, v);
+        }
         0
     };
 
@@ -1940,5 +2039,1096 @@ pub fn arkLsInitializeCounters(arkls_mem: &mut ARKLsMem) -> i32 {
     arkls_mem.ncfl = 0;
     arkls_mem.njtsetup = 0;
     arkls_mem.njtimes = 0;
+    0
+}
+
+/*===============================================================
+  Mass-matrix linear solver interface (the ARKLsMassMem half)
+  ===============================================================*/
+
+/* C: arkLs_AccessMassMem / arkLs_AccessARKODEMassMem.  Takes the
+   ARKLsMassMem box out through the step_getmassmem op; callers put
+   it back by writing ark_mem.mass_mem. */
+pub(crate) fn arkLs_AccessMassMem(
+    ark_mem: &mut ARKodeMem,
+    fname: &str,
+) -> Result<Box<crate::arkode_ls_impl::ARKLsMassMem>, i32> {
+    let taken = match ark_mem.step_getmassmem {
+        Some(get) => get(ark_mem),
+        None => None,
+    };
+    match taken {
+        Some(m) => Ok(m),
+        None => {
+            arkProcessError(
+                Some(ark_mem),
+                ARKLS_MASSMEM_NULL,
+                line!(),
+                fname,
+                file!(),
+                "Mass matrix solver memory is NULL.",
+            );
+            Err(ARKLS_MASSMEM_NULL)
+        }
+    }
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMassLinearSolver specifies the iterative mass-matrix
+  linear solver and user-supplied routine to perform the
+  mass-matrix-vector product.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMassLinearSolver(
+    ark_mem: &mut ARKodeMem,
+    LS: LinearSolver,
+    M: Option<SUNMatrix>,
+    time_dep: bool,
+) -> i32 {
+    use crate::arkode_ls_impl::ARKLsMassMem;
+
+    /* Guard against use for time steppers that do not support mass matrices */
+    if !ark_mem.step_supports_massmatrix {
+        arkProcessError(
+            Some(ark_mem),
+            ARK_STEPPER_UNSUPPORTED,
+            line!(),
+            "ARKodeSetMassLinearSolver",
+            file!(),
+            "time-stepping module does not support non-identity mass matrices",
+        );
+        return ARK_STEPPER_UNSUPPORTED;
+    }
+
+    /* Retrieve the LS type; set flags based on LS type */
+    let LSType = LS.ls_type();
+    let iterative = LSType != SUNLINEARSOLVER_DIRECT;
+    let matrixbased =
+        LSType != SUNLINEARSOLVER_ITERATIVE && LSType != SUNLINEARSOLVER_MATRIX_EMBEDDED;
+
+    /* Ensure that M is NULL when LS is matrix-embedded */
+    if LSType == SUNLINEARSOLVER_MATRIX_EMBEDDED && M.is_some() {
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassLinearSolver",
+            file!(),
+            "Incompatible inputs: matrix-embedded LS requires NULL matrix",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+
+    /* Check for compatible LS type, matrix and "atimes" support */
+    if iterative {
+        if matrixbased && M.is_none() {
+            arkProcessError(
+                Some(ark_mem),
+                ARKLS_ILL_INPUT,
+                line!(),
+                "ARKodeSetMassLinearSolver",
+                file!(),
+                "Incompatible inputs: matrix-iterative LS requires non-NULL matrix",
+            );
+            return ARKLS_ILL_INPUT;
+        }
+    } else if M.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassLinearSolver",
+            file!(),
+            "Incompatible inputs: direct LS requires non-NULL matrix",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+
+    /* Test whether time stepper module is supplied, with required routines */
+    if ark_mem.step_attachmasssol.is_none() || ark_mem.step_getmassmem.is_none() {
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassLinearSolver",
+            file!(),
+            "Missing time step module or associated routines",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+
+    /* When using a non-NULL SUNMatrix object, for direct linear solvers
+       create M_lu to store the factorization of M (C aliases M_lu = M
+       for iterative solvers; the Rust iterative solve never touches the
+       matrix operand) */
+    let M_lu = match (&M, iterative) {
+        (Some(m), false) => Some(SUNMatClone(m)),
+        _ => None,
+    };
+
+    /* Allocate memory for ARKLsMassMemRec, set defaults (memset-0 +
+       the explicit C initializations) */
+    let mut arkls_mem = Box::new(ARKLsMassMem {
+        iterative,
+        matrixbased,
+        mass: None,
+        M,
+        M_lu,
+        eplifac: ARKLS_EPLIN,
+        nrmfac: ZERO,
+        time_dependent: time_dep,
+        msetuptime: ZERO,
+        nmsetups: 0,
+        nmsolves: 0,
+        nmtsetup: 0,
+        nmtimes: 0,
+        nmvsetup: 0,
+        npe: 0,
+        nli: 0,
+        nps: 0,
+        ncfl: 0,
+        LS,
+        x: NVector::new(0),
+        pset: None,
+        psolve: None,
+        mtsetup: None,
+        mtimes: None,
+        last_flag: ARKLS_SUCCESS,
+    });
+
+    /* Initialize counters */
+    arkLsInitializeMassCounters(&mut arkls_mem);
+
+    /* (C attaches NULL ATimes / preconditioner hooks to the LS object
+       here; the Rust iterative solvers receive those callbacks at
+       solve time.) */
+
+    /* Allocate memory for x (arkAllocVec cannot fail here) */
+    let tmpl_len = ark_mem.tempv1.data.len();
+    arkAllocVec(ark_mem, tmpl_len, &mut arkls_mem.x);
+
+    /* For iterative LS, compute default norm conversion factor */
+    if iterative {
+        arkls_mem.nrmfac = SUNRsqrt(N_VGetLength(&arkls_mem.x) as f64);
+    }
+
+    /* Attach ARKLs interface to time stepper module */
+    let attach = ark_mem.step_attachmasssol.unwrap();
+    let retval = attach(
+        ark_mem,
+        Some(arkLsMassInitialize),
+        Some(arkLsMassSetup),
+        Some(arkLsMTimes),
+        Some(arkLsMassSolve),
+        Some(arkLsMassFree),
+        time_dep,
+        LSType,
+        arkls_mem,
+    );
+    if retval != ARK_SUCCESS {
+        arkProcessError(
+            Some(ark_mem),
+            retval,
+            line!(),
+            "ARKodeSetMassLinearSolver",
+            file!(),
+            "Failed to attach to time stepper module",
+        );
+        return retval;
+    }
+
+    ARKLS_SUCCESS
+}
+
+/* Shared entry guard for the mass option routines:
+   supports_massmatrix check + mass_mem take. */
+macro_rules! arkls_mass_option_fn {
+    ($ark_mem:ident, $fname:literal) => {{
+        if !$ark_mem.step_supports_massmatrix {
+            arkProcessError(
+                Some($ark_mem),
+                ARK_STEPPER_UNSUPPORTED,
+                line!(),
+                $fname,
+                file!(),
+                "time-stepping module does not support non-identity mass matrices",
+            );
+            return ARK_STEPPER_UNSUPPORTED;
+        }
+        match arkLs_AccessMassMem($ark_mem, $fname) {
+            Ok(m) => m,
+            Err(e) => return e,
+        }
+    }};
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMassFn specifies the mass matrix function.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMassFn(
+    ark_mem: &mut ARKodeMem,
+    mass: Option<crate::arkode_ls_impl::ARKLsMassFn>,
+) -> i32 {
+    let mut arkls_mem = arkls_mass_option_fn!(ark_mem, "ARKodeSetMassFn");
+
+    /* return with failure if mass cannot be used */
+    if mass.is_none() {
+        ark_mem.mass_mem = Some(arkls_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassFn",
+            file!(),
+            "Mass-matrix routine must be non-NULL",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+    if arkls_mem.M.is_none() {
+        ark_mem.mass_mem = Some(arkls_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassFn",
+            file!(),
+            "Mass-matrix routine cannot be supplied for NULL SUNMatrix",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+
+    /* set mass matrix routine pointer and return */
+    arkls_mem.mass = mass;
+
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMassEpsLin specifies the nonlinear -> linear tolerance
+  scale factor for mass matrix linear systems.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMassEpsLin(ark_mem: &mut ARKodeMem, eplifac: f64) -> i32 {
+    let mut arkls_mem = arkls_mass_option_fn!(ark_mem, "ARKodeSetMassEpsLin");
+
+    /* store input and return */
+    arkls_mem.eplifac = if eplifac <= ZERO { ARKLS_EPLIN } else { eplifac };
+
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMassLSNormFactor sets or computes the factor to use
+  when converting from the integrator tolerance (WRMS norm) to the
+  linear solver tolerance (L2 norm).
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMassLSNormFactor(ark_mem: &mut ARKodeMem, nrmfac: f64) -> i32 {
+    let mut arkls_mem = arkls_mass_option_fn!(ark_mem, "ARKodeSetMassLSNormFactor");
+
+    /* store input and return */
+    if nrmfac > ZERO {
+        /* set user-provided factor */
+        arkls_mem.nrmfac = nrmfac;
+    } else if nrmfac < ZERO {
+        /* compute factor for WRMS norm with dot product */
+        N_VConst(ONE, &mut ark_mem.tempv1);
+        arkls_mem.nrmfac = SUNRsqrt(N_VDotProd(&ark_mem.tempv1, &ark_mem.tempv1));
+    } else {
+        /* compute default factor for WRMS norm from vector length */
+        arkls_mem.nrmfac = SUNRsqrt(N_VGetLength(&ark_mem.tempv1) as f64);
+    }
+
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMassPreconditioner specifies the user-supplied
+  preconditioner setup and solve routines.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMassPreconditioner(
+    ark_mem: &mut ARKodeMem,
+    psetup: Option<crate::arkode_ls_impl::ARKLsMassPrecSetupFn>,
+    psolve: Option<crate::arkode_ls_impl::ARKLsMassPrecSolveFn>,
+) -> i32 {
+    let mut arkls_mem = arkls_mass_option_fn!(ark_mem, "ARKodeSetMassPreconditioner");
+
+    /* issue error if LS object does not allow user-supplied preconditioning */
+    if !arkls_mem.iterative {
+        ark_mem.mass_mem = Some(arkls_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassPreconditioner",
+            file!(),
+            "SUNLinearSolver object does not support user-supplied preconditioning",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+
+    /* store function pointers for user-supplied routines */
+    arkls_mem.pset = psetup;
+    arkls_mem.psolve = psolve;
+
+    /* (the Rust iterative solvers receive the psolve closure at solve time) */
+
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeSetMassTimes specifies the user-supplied mass
+  matrix-vector product setup and multiply routines.
+  ---------------------------------------------------------------*/
+pub fn ARKodeSetMassTimes(
+    ark_mem: &mut ARKodeMem,
+    mtsetup: Option<crate::arkode_ls_impl::ARKLsMassTimesSetupFn>,
+    mtimes: Option<crate::arkode_ls_impl::ARKLsMassTimesVecFn>,
+) -> i32 {
+    let mut arkls_mem = arkls_mass_option_fn!(ark_mem, "ARKodeSetMassTimes");
+
+    /* issue error if mtimes function is unusable */
+    if mtimes.is_none() {
+        ark_mem.mass_mem = Some(arkls_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassTimes",
+            file!(),
+            "non-NULL mtimes function must be supplied",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+
+    /* issue error if LS object does not allow user-supplied ATimes */
+    if !arkls_mem.iterative {
+        ark_mem.mass_mem = Some(arkls_mem);
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "ARKodeSetMassTimes",
+            file!(),
+            "SUNLinearSolver object does not support user-supplied ATimes routine",
+        );
+        return ARKLS_ILL_INPUT;
+    }
+
+    /* store pointers for user-supplied routines in ARKLs interface
+       (C also stores mtimes_data; collapsed onto ark_mem.user_data) */
+    arkls_mem.mtsetup = mtsetup;
+    arkls_mem.mtimes = mtimes;
+
+    /* (the Rust iterative solvers receive the ATimes closure at solve time) */
+
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  ARKodeGetMassWorkSpace
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetMassWorkSpace(ark_mem: &mut ARKodeMem, lenrw: &mut i64, leniw: &mut i64) -> i32 {
+    /* Return 0 for incompatible steppers */
+    if !ark_mem.step_supports_massmatrix {
+        *lenrw = 0;
+        *leniw = 0;
+        return ARK_SUCCESS;
+    }
+
+    let arkls_mem = match arkLs_AccessMassMem(ark_mem, "ARKodeGetMassWorkSpace") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    /* start with fixed sizes plus vector/matrix pointers */
+    *lenrw = 2;
+    *leniw = 23;
+
+    /* add NVector sizes */
+    *lenrw += ark_mem.tempv1.data.len() as i64;
+    *leniw += 1; /* N_VSpace_Serial: (n, 1) */
+
+    /* add SUNMatrix size (only account for the one owned by Ls interface) */
+    if !arkls_mem.iterative {
+        if let Some(m_lu) = &arkls_mem.M_lu {
+            let (mut lrw, mut liw) = (0i64, 0i64);
+            if SUNMatSpace(m_lu, &mut lrw, &mut liw) == 0 {
+                *lenrw += lrw;
+                *leniw += liw;
+            }
+        }
+    }
+
+    /* add LS sizes */
+    let (lrw, liw) = arkls_mem.LS.space();
+    *lenrw += lrw;
+    *leniw += liw;
+
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+/* Shared boilerplate for the scalar mass statistics getters. */
+macro_rules! arkls_mass_stat_get {
+    ($name:ident, $field:ident) => {
+        pub fn $name(ark_mem: &mut ARKodeMem, out: &mut i64) -> i32 {
+            /* Return 0 for incompatible steppers */
+            if !ark_mem.step_supports_massmatrix {
+                *out = 0;
+                return ARK_SUCCESS;
+            }
+
+            let arkls_mem = match arkLs_AccessMassMem(ark_mem, stringify!($name)) {
+                Ok(m) => m,
+                Err(e) => return e,
+            };
+
+            *out = arkls_mem.$field;
+            ark_mem.mass_mem = Some(arkls_mem);
+            ARKLS_SUCCESS
+        }
+    };
+}
+
+arkls_mass_stat_get!(ARKodeGetNumMassSetups, nmsetups);
+arkls_mass_stat_get!(ARKodeGetNumMassMult, nmtimes);
+arkls_mass_stat_get!(ARKodeGetNumMassSolves, nmsolves);
+arkls_mass_stat_get!(ARKodeGetNumMassPrecEvals, npe);
+arkls_mass_stat_get!(ARKodeGetNumMassPrecSolves, nps);
+arkls_mass_stat_get!(ARKodeGetNumMassIters, nli);
+arkls_mass_stat_get!(ARKodeGetNumMassConvFails, ncfl);
+arkls_mass_stat_get!(ARKodeGetNumMTSetups, nmtsetup);
+arkls_mass_stat_get!(ARKodeGetNumMassMultSetups, nmvsetup);
+
+/*---------------------------------------------------------------
+  ARKodeGetCurrentMassMatrix returns a copy of the current mass
+  matrix (C hands out the internal pointer).
+  ---------------------------------------------------------------*/
+pub fn ARKodeGetCurrentMassMatrix(ark_mem: &mut ARKodeMem, M: &mut Option<SUNMatrix>) -> i32 {
+    /* Return NULL for incompatible steppers */
+    if !ark_mem.step_supports_massmatrix {
+        *M = None;
+        return ARK_SUCCESS;
+    }
+
+    let arkls_mem = match arkLs_AccessMassMem(ark_mem, "ARKodeGetCurrentMassMatrix") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    /* set output and return */
+    *M = arkls_mem.M.as_ref().map(SUNMatClone_Copy);
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+pub fn ARKodeGetLastMassFlag(ark_mem: &mut ARKodeMem, flag: &mut i64) -> i32 {
+    /* Return 0 for incompatible steppers */
+    if !ark_mem.step_supports_massmatrix {
+        *flag = 0;
+        return ARK_SUCCESS;
+    }
+
+    let arkls_mem = match arkLs_AccessMassMem(ark_mem, "ARKodeGetLastMassFlag") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    *flag = arkls_mem.last_flag as i64;
+    ark_mem.mass_mem = Some(arkls_mem);
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkLSSetMassUserData sets user_data pointers in the mass ARKLS
+  interface (Rust: the data pointers collapsed onto
+  ark_mem.user_data, so there is nothing to update).
+  ---------------------------------------------------------------*/
+pub fn arkLSSetMassUserData(_ark_mem: &mut ARKodeMem) -> i32 {
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkLsMTimes:
+
+  This routine generates the matrix-vector product z = Mv, where
+  M is the system mass matrix, by calling the user-supplied mtimes
+  routine (default) or asking the SUNMatrix to do the multiply.
+  ---------------------------------------------------------------*/
+pub fn arkLsMTimes(ark_mem: &mut ARKodeMem, v: &NVector, z: &mut NVector) -> i32 {
+    let mut arkls_mem = match arkLs_AccessMassMem(ark_mem, "arkLsMTimes") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let ret = arkLsMTimes_inner(ark_mem, &mut arkls_mem, v, z);
+    ark_mem.mass_mem = Some(arkls_mem);
+    ret
+}
+
+fn arkLsMTimes_inner(
+    ark_mem: &mut ARKodeMem,
+    arkls_mem: &mut crate::arkode_ls_impl::ARKLsMassMem,
+    v: &NVector,
+    z: &mut NVector,
+) -> i32 {
+    /* perform multiply by either calling the user-supplied routine
+       (default), or asking the SUNMatrix to do the multiply */
+    if let Some(mtimes) = arkls_mem.mtimes {
+        /* call user-supplied mtimes routine, increment counter and return */
+        let retval = mtimes(v, z, ark_mem.tcur, &mut ark_mem.user_data);
+        if retval == 0 {
+            arkls_mem.nmtimes += 1;
+        } else {
+            arkProcessError(
+                Some(ark_mem),
+                retval,
+                line!(),
+                "arkLsMTimes",
+                file!(),
+                "Error in user mass matrix-vector product routine",
+            );
+        }
+        return retval;
+    } else if let Some(m) = &arkls_mem.M {
+        /* ask SUNMatrix to do the multiply; increment counter and return */
+        let retval = SUNMatMatvec(m, v, z);
+        if retval == 0 {
+            arkls_mem.nmtimes += 1;
+        } else {
+            arkProcessError(
+                Some(ark_mem),
+                retval,
+                line!(),
+                "arkLsMTimes",
+                file!(),
+                "Error in SUNMatrix mass matrix-vector product routine",
+            );
+        }
+        return retval;
+    }
+
+    /* if we made it here, then no matrix-vector product is available */
+    arkProcessError(
+        Some(ark_mem),
+        -1,
+        line!(),
+        "arkLsMTimes",
+        file!(),
+        "Missing mass matrix-vector product routine",
+    );
+    -1
+}
+
+/*---------------------------------------------------------------
+  arkLsMassInitialize performs remaining initializations specific
+  to the mass matrix solver interface (and solver itself)
+  ---------------------------------------------------------------*/
+pub fn arkLsMassInitialize(ark_mem: &mut ARKodeMem) -> i32 {
+    let mut arkls_mem = match arkLs_AccessMassMem(ark_mem, "arkLsMassInitialize") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let ret = arkLsMassInitialize_inner(ark_mem, &mut arkls_mem);
+    ark_mem.mass_mem = Some(arkls_mem);
+    ret
+}
+
+fn arkLsMassInitialize_inner(
+    ark_mem: &mut ARKodeMem,
+    arkls_mem: &mut crate::arkode_ls_impl::ARKLsMassMem,
+) -> i32 {
+    /* reset counters */
+    arkLsInitializeMassCounters(arkls_mem);
+
+    /* perform checks for matrix-based mass system */
+    if arkls_mem.M.is_some() {
+        /* check for user-provided mass matrix constructor */
+        if arkls_mem.mass.is_none() {
+            arkProcessError(
+                Some(ark_mem),
+                ARKLS_ILL_INPUT,
+                line!(),
+                "arkLsMassInitialize",
+                file!(),
+                "Missing user-provided mass-matrix routine",
+            );
+            arkls_mem.last_flag = ARKLS_ILL_INPUT;
+            return arkls_mem.last_flag;
+        }
+        /* (matrix-vector products are always available: the serial
+           SUNMatrix implementations all provide matvec) */
+    }
+
+    /* perform checks for matrix-free mass system */
+    if arkls_mem.M.is_none()
+        && arkls_mem.mtimes.is_none()
+        && arkls_mem.LS.ls_type() != SUNLINEARSOLVER_MATRIX_EMBEDDED
+    {
+        arkProcessError(
+            Some(ark_mem),
+            ARKLS_ILL_INPUT,
+            line!(),
+            "arkLsMassInitialize",
+            file!(),
+            "Missing user-provided mass matrix-vector product routine",
+        );
+        arkls_mem.last_flag = ARKLS_ILL_INPUT;
+        return arkls_mem.last_flag;
+    }
+
+    /* if M is NULL and neither pset or mtsetup are present, then
+       arkLsMassSetup does not need to be called, so set the
+       msetup function to NULL */
+    if arkls_mem.M.is_none() && arkls_mem.pset.is_none() && arkls_mem.mtsetup.is_none() {
+        if let Some(disable) = ark_mem.step_disablemsetup {
+            disable(ark_mem);
+        }
+    }
+
+    /* When using a matrix-embedded linear solver, disable lsetup call */
+    if arkls_mem.LS.ls_type() == SUNLINEARSOLVER_MATRIX_EMBEDDED {
+        if let Some(disable) = ark_mem.step_disablemsetup {
+            disable(ark_mem);
+        }
+    }
+
+    /* Call LS initialize routine */
+    arkls_mem.last_flag = arkls_mem.LS.initialize();
+    arkls_mem.last_flag
+}
+
+/*---------------------------------------------------------------
+  arkLsMassSetup calls the LS 'setup' routine.
+  ---------------------------------------------------------------*/
+pub fn arkLsMassSetup(
+    ark_mem: &mut ARKodeMem,
+    t: f64,
+    vtemp1: &mut NVector,
+    vtemp2: &mut NVector,
+    vtemp3: &mut NVector,
+) -> i32 {
+    let mut arkls_mem = match arkLs_AccessMassMem(ark_mem, "arkLsMassSetup") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let ret = arkLsMassSetup_inner(ark_mem, &mut arkls_mem, t, vtemp1, vtemp2, vtemp3);
+    ark_mem.mass_mem = Some(arkls_mem);
+    ret
+}
+
+fn arkLsMassSetup_inner(
+    ark_mem: &mut ARKodeMem,
+    arkls_mem: &mut crate::arkode_ls_impl::ARKLsMassMem,
+    t: f64,
+    vtemp1: &mut NVector,
+    vtemp2: &mut NVector,
+    vtemp3: &mut NVector,
+) -> i32 {
+    /* Immediately return when using matrix-embedded linear solver */
+    if arkls_mem.LS.ls_type() == SUNLINEARSOLVER_MATRIX_EMBEDDED {
+        arkls_mem.last_flag = ARKLS_SUCCESS;
+        return arkls_mem.last_flag;
+    }
+
+    /* if the most recent setup essentially matches the current time,
+       just return with success */
+    if SUNRabs(arkls_mem.msetuptime - t) < FUZZ_FACTOR * ark_mem.uround {
+        arkls_mem.last_flag = ARKLS_SUCCESS;
+        return arkls_mem.last_flag;
+    }
+
+    /* Determine whether to call user-provided mtsetup routine */
+    let call_mtsetup = arkls_mem.mtsetup.is_some()
+        && (arkls_mem.time_dependent || arkls_mem.nmtsetup == 0);
+
+    /* call user-provided mtsetup routine if applicable */
+    if call_mtsetup {
+        let mtsetup = arkls_mem.mtsetup.unwrap();
+        arkls_mem.last_flag = mtsetup(t, &mut ark_mem.user_data);
+        arkls_mem.nmtsetup += 1;
+        arkls_mem.msetuptime = t;
+        if arkls_mem.last_flag != 0 {
+            arkProcessError(
+                Some(ark_mem),
+                arkls_mem.last_flag,
+                line!(),
+                "arkLsMassSetup",
+                file!(),
+                "The mass matrix x vector setup routine failed in an unrecoverable manner.",
+            );
+            return arkls_mem.last_flag;
+        }
+    }
+
+    /* Perform user-facing setup based on whether this is matrix-free */
+    let call_lssetup;
+    if arkls_mem.M.is_none() {
+        /*** matrix-free -- only call LS setup if preconditioner setup
+             exists (for the Rust iterative solvers that setup is the
+             MPSetup call below) ***/
+        call_lssetup = arkls_mem.pset.is_some();
+    } else {
+        /*** matrix-based ***/
+
+        /* If mass matrix is not time dependent, and if it has been set up
+           previously, then just reuse existing matrix and factorization */
+        if !arkls_mem.time_dependent && arkls_mem.nmsetups > 0 {
+            arkls_mem.last_flag = ARKLS_SUCCESS;
+            return arkls_mem.last_flag;
+        }
+
+        /* Clear the mass matrix if necessary (direct linear solvers) */
+        if !arkls_mem.iterative {
+            let retval = SUNMatZero(arkls_mem.M.as_mut().unwrap());
+            if retval != 0 {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARKLS_SUNMAT_FAIL,
+                    line!(),
+                    "arkLsMassSetup",
+                    file!(),
+                    MSG_LS_SUNMAT_FAILED,
+                );
+                arkls_mem.last_flag = ARKLS_SUNMAT_FAIL;
+                return arkls_mem.last_flag;
+            }
+        }
+
+        /* Call user-supplied routine to fill the mass matrix */
+        let mass = arkls_mem.mass.unwrap();
+        let retval = mass(
+            t,
+            arkls_mem.M.as_mut().unwrap(),
+            &mut ark_mem.user_data,
+            vtemp1,
+            vtemp2,
+            vtemp3,
+        );
+        arkls_mem.msetuptime = t;
+        if retval < 0 {
+            arkProcessError(
+                Some(ark_mem),
+                ARKLS_MASSFUNC_UNRECVR,
+                line!(),
+                "arkLsMassSetup",
+                file!(),
+                "The mass matrix routine failed in an unrecoverable manner.",
+            );
+            arkls_mem.last_flag = ARKLS_MASSFUNC_UNRECVR;
+            return -1;
+        }
+        if retval > 0 {
+            arkls_mem.last_flag = ARKLS_MASSFUNC_RECVR;
+            return 1;
+        }
+
+        /* Copy M into M_lu for factorization (direct linear solvers) */
+        if !arkls_mem.iterative {
+            let crate::arkode_ls_impl::ARKLsMassMem { M, M_lu, .. } = arkls_mem;
+            let retval = SUNMatCopy(M.as_ref().unwrap(), M_lu.as_mut().unwrap());
+            if retval != 0 {
+                arkProcessError(
+                    Some(ark_mem),
+                    ARKLS_SUNMAT_FAIL,
+                    line!(),
+                    "arkLsMassSetup",
+                    file!(),
+                    MSG_LS_SUNMAT_FAILED,
+                );
+                arkls_mem.last_flag = ARKLS_SUNMAT_FAIL;
+                return arkls_mem.last_flag;
+            }
+        }
+
+        /* (matvec setup: the serial SUNMatrix implementations have no
+           matvecsetup routine, matching C where call_mvsetup stays
+           SUNFALSE for them) */
+
+        /* signal call to LS setup routine */
+        call_lssetup = true;
+    }
+
+    /* Call LS setup routine if applicable, and return */
+    if call_lssetup {
+        arkls_mem.last_flag = match &arkls_mem.LS {
+            LinearSolver::Dense(_) | LinearSolver::Band(_) => {
+                let crate::arkode_ls_impl::ARKLsMassMem { LS, M_lu, .. } = arkls_mem;
+                LS.setup(M_lu.as_mut())
+            }
+            _ => {
+                /* iterative solver: mass preconditioner setup (arkLsMPSetup);
+                   only proceed if the mass matrix is time-dependent or if
+                   pset has not been called previously */
+                if let Some(pset) = arkls_mem.pset {
+                    if arkls_mem.time_dependent || arkls_mem.npe == 0 {
+                        let r = pset(ark_mem.tcur, &mut ark_mem.user_data);
+                        arkls_mem.npe += 1;
+                        r
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+        };
+        arkls_mem.nmsetups += 1;
+    }
+
+    arkls_mem.last_flag
+}
+
+/*---------------------------------------------------------------
+  arkLsMassSolve: interfaces between ARKODE and the generic
+  SUNLinearSolver object LS, by setting the appropriate tolerance
+  and scaling vectors, calling the solver, and accumulating
+  statistics from the solve for use/reporting by ARKODE.
+  ---------------------------------------------------------------*/
+pub fn arkLsMassSolve(ark_mem: &mut ARKodeMem, b: &mut NVector, nlscoef: f64) -> i32 {
+    let mut arkls_mem = match arkLs_AccessMassMem(ark_mem, "arkLsMassSolve") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let ret = arkLsMassSolve_inner(ark_mem, &mut arkls_mem, b, nlscoef);
+    ark_mem.mass_mem = Some(arkls_mem);
+    ret
+}
+
+fn arkLsMassSolve_inner(
+    ark_mem: &mut ARKodeMem,
+    arkls_mem: &mut crate::arkode_ls_impl::ARKLsMassMem,
+    b: &mut NVector,
+    nlscoef: f64,
+) -> i32 {
+    /* Set input tolerance for iterative solvers (in 2-norm) */
+    let delta = if arkls_mem.iterative {
+        arkls_mem.eplifac * nlscoef * arkls_mem.nrmfac
+    } else {
+        ZERO
+    };
+
+    /* (Scaling vectors: the Rust iterative solvers all accept the s1/s2
+       scaling vectors at solve time — the C "solver does not support
+       scaling vectors" rwt_mean fallback branch is unreachable.) */
+
+    /* Set initial guess x = 0 for LS, and zero initial guess flag */
+    N_VConst(ZERO, &mut arkls_mem.x);
+    arkls_mem.LS.set_zero_guess(SUNTRUE);
+
+    /* Call solver, copy x to b, and increment mass solver counter */
+    let retval = if arkls_mem.LS.ls_type() == SUNLINEARSOLVER_DIRECT {
+        let crate::arkode_ls_impl::ARKLsMassMem { LS, M_lu, x, .. } = arkls_mem;
+        match (LS, M_lu.as_mut()) {
+            (LinearSolver::Dense(dls), Some(SUNMatrix::Dense(am))) => dls.solve(am, x, b),
+            (LinearSolver::Band(bls), Some(SUNMatrix::Band(am))) => bls.solve(am, x, b),
+            _ => SUN_ERR_ARG_INCOMPATIBLE,
+        }
+    } else {
+        arkLsMassSolveIterative(ark_mem, arkls_mem, b, delta)
+    };
+    {
+        let crate::arkode_ls_impl::ARKLsMassMem { x, .. } = arkls_mem;
+        N_VScale(ONE, x, b);
+    }
+    arkls_mem.nmsolves += 1;
+
+    /* Retrieve statistics from iterative linear solvers */
+    let mut nli_inc = 0;
+    if arkls_mem.iterative {
+        nli_inc = arkls_mem.LS.num_iters();
+    }
+
+    /* Increment counters nli and ncfl */
+    arkls_mem.nli += nli_inc as i64;
+    if retval != SUN_SUCCESS {
+        arkls_mem.ncfl += 1;
+    }
+
+    /* Interpret solver return value  */
+    arkls_mem.last_flag = retval;
+
+    match retval {
+        SUN_SUCCESS => 0,
+        SUNLS_RES_REDUCED | SUNLS_CONV_FAIL | SUNLS_ATIMES_FAIL_REC | SUNLS_PSOLVE_FAIL_REC
+        | SUNLS_PACKAGE_FAIL_REC | SUNLS_QRFACT_FAIL | SUNLS_LUFACT_FAIL => 1,
+        SUN_ERR_ARG_CORRUPT | SUN_ERR_ARG_INCOMPATIBLE | SUN_ERR_MEM_FAIL | SUNLS_GS_FAIL
+        | SUNLS_QRSOL_FAIL => -1,
+        SUN_ERR_EXT_FAIL => {
+            arkProcessError(
+                Some(ark_mem),
+                SUN_ERR_EXT_FAIL,
+                line!(),
+                "arkLsMassSolve",
+                file!(),
+                "Failure in SUNLinSol external package",
+            );
+            -1
+        }
+        SUNLS_ATIMES_FAIL_UNREC => {
+            arkProcessError(
+                Some(ark_mem),
+                SUNLS_ATIMES_FAIL_UNREC,
+                line!(),
+                "arkLsMassSolve",
+                file!(),
+                "The mass matrix x vector routine failed in an unrecoverable manner.",
+            );
+            -1
+        }
+        SUNLS_PSOLVE_FAIL_UNREC => {
+            arkProcessError(
+                Some(ark_mem),
+                SUNLS_PSOLVE_FAIL_UNREC,
+                line!(),
+                "arkLsMassSolve",
+                file!(),
+                MSG_LS_PSOLVE_FAILED,
+            );
+            -1
+        }
+        _ => 0,
+    }
+}
+
+/* Iterative mass solve: builds the MTimes (arkLsMTimes) and MPSolve
+   (arkLsMPSolve) callbacks over the integrator memory (same RefCell
+   pattern as arkLsSolveIterative); scaling vectors s1 = rwt,
+   s2 = ewt. */
+fn arkLsMassSolveIterative(
+    ark_mem: &mut ARKodeMem,
+    arkls_mem: &mut crate::arkode_ls_impl::ARKLsMassMem,
+    b: &NVector,
+    delta: f64,
+) -> i32 {
+    let crate::arkode_ls_impl::ARKLsMassMem {
+        LS,
+        x,
+        nmtimes,
+        nps,
+        mtimes,
+        psolve,
+        M,
+        ..
+    } = arkls_mem;
+    let mtimes_fn = *mtimes;
+    let psolve_fn = *psolve;
+
+    let ewt = std::mem::take(&mut ark_mem.ewt);
+    let rwt_detached = if ark_mem.rwt_is_ewt {
+        None
+    } else {
+        Some(std::mem::take(&mut ark_mem.rwt))
+    };
+    let arm = RefCell::new(&mut *ark_mem);
+    let ewt_ref = &ewt;
+    let rwt_ref: &NVector = match &rwt_detached {
+        Some(r) => r,
+        None => ewt_ref,
+    };
+
+    let mut atimes = |v: &NVector, z: &mut NVector| -> i32 {
+        let mut guard = arm.borrow_mut();
+        let ar: &mut ARKodeMem = &mut guard;
+
+        /* arkLsMTimes: user mtimes (default) or SUNMatrix multiply */
+        if let Some(mt) = mtimes_fn {
+            let ret = mt(v, z, ar.tcur, &mut ar.user_data);
+            if ret == 0 {
+                *nmtimes += 1;
+            }
+            ret
+        } else if let Some(m) = M.as_ref() {
+            let ret = SUNMatMatvec(m, v, z);
+            if ret == 0 {
+                *nmtimes += 1;
+            }
+            ret
+        } else {
+            -1
+        }
+    };
+
+    let mut psolve_cb = |r: &NVector, z: &mut NVector, tol: f64, lr: i32| -> i32 {
+        let mut guard = arm.borrow_mut();
+        let ar: &mut ARKodeMem = &mut guard;
+
+        /* arkLsMPSolve: call the user-supplied psolve routine */
+        let ret = if let Some(ps) = psolve_fn {
+            ps(ar.tcur, r, z, tol, lr, &mut ar.user_data)
+        } else {
+            0
+        };
+        *nps += 1;
+        ret
+    };
+
+    let retval = if psolve_fn.is_some() {
+        LS.solve(
+            None,
+            x,
+            b,
+            delta,
+            &mut atimes,
+            Some(&mut psolve_cb),
+            Some(rwt_ref),
+            Some(ewt_ref),
+        )
+    } else {
+        LS.solve(None, x, b, delta, &mut atimes, None, Some(rwt_ref), Some(ewt_ref))
+    };
+
+    /* end the closures' shared borrow of the RefCell before unwrapping */
+    let _ = (atimes, psolve_cb);
+    let ark_mem_back = arm.into_inner();
+    ark_mem_back.ewt = ewt;
+    if let Some(r) = rwt_detached {
+        ark_mem_back.rwt = r;
+    }
+
+    retval
+}
+
+/*---------------------------------------------------------------
+  arkLsMassFree frees memory associated with the ARKLs mass
+  matrix solver interface.
+  ---------------------------------------------------------------*/
+pub fn arkLsMassFree(ark_mem: &mut ARKodeMem) -> i32 {
+    /* Return immediately if ARKodeMem, ARKLsMassMem are NULL */
+    let taken = match ark_mem.step_getmassmem {
+        Some(get) => get(ark_mem),
+        None => None,
+    };
+    let mut arkls_mem = match taken {
+        Some(m) => m,
+        None => return ARKLS_SUCCESS,
+    };
+
+    /* Free N_Vector memory (with lrw/liw accounting) */
+    arkFreeVec(ark_mem, &mut arkls_mem.x);
+
+    /* M_lu / M / LS memory is dropped with the box (C destroys M_lu for
+       direct solvers, nullifies the borrowed pointers, and calls any
+       pfree here) */
+    ARKLS_SUCCESS
+}
+
+/*---------------------------------------------------------------
+  arkLsInitializeMassCounters resets all counters from an
+  ARKLsMassMem structure.
+  ---------------------------------------------------------------*/
+pub fn arkLsInitializeMassCounters(arkls_mem: &mut crate::arkode_ls_impl::ARKLsMassMem) -> i32 {
+    arkls_mem.nmsetups = 0;
+    arkls_mem.nmsolves = 0;
+    arkls_mem.nmtsetup = 0;
+    arkls_mem.nmtimes = 0;
+    arkls_mem.nmvsetup = 0;
+    arkls_mem.npe = 0;
+    arkls_mem.nli = 0;
+    arkls_mem.nps = 0;
+    arkls_mem.ncfl = 0;
+    arkls_mem.msetuptime = -crate::sundials_types::SUN_BIG_REAL;
     0
 }

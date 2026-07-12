@@ -463,11 +463,15 @@ pub type ARKTimestepAttachMasssolFn = fn(
     mfree: Option<ARKMassFreeFn>,
     time_dep: bool,
     msolve_type: SUNLinearSolver_Type,
-    mass_mem: UserData,
+    mass_mem: Box<crate::arkode_ls_impl::ARKLsMassMem>,
 ) -> i32;
 pub type ARKTimestepDisableMSetup = fn(ark_mem: &mut ARKodeMem);
 /// C returns `void*` (the stepper's mass-solver memory).
-pub type ARKTimestepGetMassMemFn = fn(ark_mem: &mut ARKodeMem) -> Option<&mut UserData>;
+/// C returns `void*` (the stepper's mass-solver memory); like lmem
+/// (Addendum C.2) the box lives on ARKodeMem.mass_mem, this op TAKES
+/// it out, and put-back writes the field.
+pub type ARKTimestepGetMassMemFn =
+    fn(ark_mem: &mut ARKodeMem) -> Option<Box<crate::arkode_ls_impl::ARKLsMassMem>>;
 
 /* time stepper interface functions -- forcing */
 pub type ARKTimestepSetForcingFn =
@@ -595,6 +599,9 @@ pub struct ARKodeMem {
        step_getlinmem op above takes it out; put-back writes this
        field.  None = C NULL. */
     pub lmem: Option<Box<crate::arkode_ls_impl::ARKLsMem>>,
+    /* Same hoisting for the ARKLS mass-solver memory (C: the
+       stepper's `void* mass_mem`). */
+    pub mass_mem: Option<Box<crate::arkode_ls_impl::ARKLsMassMem>>,
     pub step_computestate: Option<ARKTimestepComputeState>,
     pub step_setnonlinearsolver: Option<ARKTimestepSetNonlinearSolver>,
     pub step_setlinear: Option<ARKTimestepSetLinear>,
@@ -815,6 +822,7 @@ impl Default for ARKodeMem {
             step_getimplicitrhs: None,
             step_getgammas: None,
             lmem: None,
+            mass_mem: None,
             step_computestate: None,
             step_setnonlinearsolver: None,
             step_setlinear: None,
