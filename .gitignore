@@ -9,3 +9,7 @@ ark_conserved_exp_entropy_erk.txt
 ark_dissipated_exp_entropy.txt
 heat1D.txt
 heat_mesh.txt
+bruss_mesh.txt
+bruss_u.txt
+bruss_v.txt
+bruss_w.txt

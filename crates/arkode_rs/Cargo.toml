@@ -95,3 +95,7 @@ path = "examples/ark_heat1D.rs"
 [[example]]
 name = "ark_heat1D_adapt"
 path = "examples/ark_heat1D_adapt.rs"
+
+[[example]]
+name = "ark_brusselator1D"
+path = "examples/ark_brusselator1D.rs"

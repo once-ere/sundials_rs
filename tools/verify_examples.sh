@@ -109,6 +109,21 @@ verify_crate() {
               if [ ${#other} -gt ${#name} ]; then owned_by_longer=1; fi ;;
           esac
         done
+        # ... including LONGER C example names that are not ported yet
+        # (e.g. ark_brusselator1D_imexmri_*.out are NOT arg variants of
+        # ark_brusselator1D)
+        if [ $owned_by_longer -eq 0 ]; then
+          local csrc cbase
+          for csrc in "$refdir/${name}_"*.c; do
+            [ -f "$csrc" ] || continue
+            cbase="$(basename "$csrc" .c)"
+            [ "$cbase" = "$name" ] && continue
+            case "$base" in
+              "$cbase" | "${cbase}_"*)
+                if [ ${#cbase} -gt ${#name} ]; then owned_by_longer=1; fi ;;
+            esac
+          done
+        fi
         [ $owned_by_longer -eq 1 ] && continue
         local args
         args="$(awk -v k="$base" '$1 == k { $1=""; print substr($0,2); exit }' \
