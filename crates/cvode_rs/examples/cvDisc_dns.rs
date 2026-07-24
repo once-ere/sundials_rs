@@ -262,7 +262,12 @@ fn main() {
     /* ---- Integrate from the discontinuity */
 
     /* Reinitialize solver */
+    /* (the C original leaves this retval unchecked; checked here like the
+    other CVodeReInit sites so the value is read — success path identical) */
     retval = CVodeReInit(&mut cvode_mem, t1, &y);
+    if check_retval(retval, "CVodeReInit") {
+        std::process::exit(1);
+    }
 
     /* set TSTOP (max time solution proceeds to) - this is not required */
     retval = CVodeSetStopTime(&mut cvode_mem, t2);

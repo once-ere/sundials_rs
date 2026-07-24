@@ -160,7 +160,10 @@ fn rhsQ(_t: f64, y: &NVector, _yp: &NVector, ypQ: &mut NVector, user_data: &mut 
  * Process and verify arguments to idasfwddenx.
  */
 fn ProcessArgs(args: &[String]) -> (bool, i32, bool) {
-    let mut sensi = false;
+    /* C pre-initializes sensi to SUNFALSE; every path below assigns it or
+    diverges (WrongArgs -> !), so Rust definite assignment replaces the
+    initializer (and each path assigns exactly once, so no `mut`) */
+    let sensi;
     let mut sensi_meth = -1;
     let mut err_con = false;
 
