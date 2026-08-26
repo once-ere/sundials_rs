@@ -35,8 +35,8 @@ On this Mac there are two folders that look almost identical:
 
 | Folder | What it is |
 |---|---|
-| `/Users/nsh/Developer/code/rust/cvode/` | An **older / parallel copy**. Do not work here. |
-| `/Users/nsh/Developer/code/rust/sundials/` | The **active one**. All real work happens here. |
+| `/Users/youruser/Developer/code/rust/cvode/` | An **older / parallel copy**. Do not work here. |
+| `/Users/youruser/Developer/code/rust/sundials/` | The **active one**. All real work happens here. |
 
 They both contain a sub-folder called `sundials_rs/` (the actual code),
 which is why it is easy to confuse them. **The live, up-to-date work is only
@@ -54,7 +54,7 @@ confused and start editing the wrong copy.
 **Step 1 — Open a terminal and go to the active folder:**
 
 ```
-cd /Users/nsh/Developer/code/rust/sundials
+cd /Users/youruser/Developer/code/rust/sundials
 ```
 
 **Step 2 — Start Claude Code** (however you normally launch it — the
@@ -97,13 +97,13 @@ explaining anything:
 ## 5. How to check the state for yourself
 
 You do not have to take the next session's word for it. From inside
-`/Users/nsh/Developer/code/rust/sundials/sundials_rs`, you (or it) can run
+`/Users/youruser/Developer/code/rust/sundials/sundials_rs`, you (or it) can run
 these and read the output.
 
 **See the recent history of finished work:**
 
 ```
-git -C /Users/nsh/Developer/code/rust/sundials/sundials_rs log --oneline -8
+git -C /Users/youruser/Developer/code/rust/sundials/sundials_rs log --oneline -8
 ```
 
 You should see the last session's commits at the top — their messages
@@ -113,14 +113,14 @@ a `PROGRESS:` update.
 **Prove the IDA code still works** (this should report `17 passed`):
 
 ```
-cd /Users/nsh/Developer/code/rust/sundials/sundials_rs
+cd /Users/youruser/Developer/code/rust/sundials/sundials_rs
 cargo test -p ida_rs
 ```
 
 **Read the checklist of what is done vs. to-do:**
 
 ```
-open /Users/nsh/Developer/code/rust/sundials/sundials_rs/PROGRESS.md
+open /Users/youruser/Developer/code/rust/sundials/sundials_rs/PROGRESS.md
 ```
 
 ---
@@ -148,7 +148,7 @@ is not a regression.
 
 ## 7. In one sentence
 
-To resume: **open a terminal, run `cd /Users/nsh/Developer/code/rust/sundials`,
+To resume: **open a terminal, run `cd /Users/youruser/Developer/code/rust/sundials`,
 start Claude Code there, and say "resume the SUNDIALS→Rust port, read
 CLAUDE.md and PROGRESS.md first"** — the notes left behind will carry it
 forward from exactly where the last session stopped (IDA library done; IDA
