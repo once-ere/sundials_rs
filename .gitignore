@@ -26,3 +26,7 @@ cvsPendulum_dns_ref.txt
 cvsPendulum_dns_rtol_*.txt
 cvsRoberts_ASAi_dns_*_stats.csv
 ark_twowaycouple_mri_solution.txt
+
+# macOS Finder metadata. Not source, and it records the window
+# geometry and folder listing of whoever last opened the directory.
+.DS_Store
